@@ -13,6 +13,27 @@ public class InfinitMeshTerrain : MonoBehaviour
 {
     private const int TerrainSplineSampleCount = TerrainSplinesSO.SampleCount;
     private const int TerrainSplineChannelCount = (int)TerrainSplineChannel.Count;
+    private const int SplatMapCount = 2;
+    private const int SplatMapChannelCount = 4;
+    private const int MaxTerrainLayerCount = SplatMapCount * SplatMapChannelCount;
+    private static readonly int[] SplatMapPropertyIds =
+    {
+        Shader.PropertyToID("_SplatMap"),
+        Shader.PropertyToID("_SplatMap2")
+    };
+
+    private static readonly int[] LayerTexturePropertyIds =
+    {
+        Shader.PropertyToID("_Texture2D_R"),
+        Shader.PropertyToID("_Texture2D_G"),
+        Shader.PropertyToID("_Texture2D_B"),
+        Shader.PropertyToID("_Texture2D_A"),
+        Shader.PropertyToID("_Texture2D_R2"),
+        Shader.PropertyToID("_Texture2D_G2"),
+        Shader.PropertyToID("_Texture2D_B2"),
+        Shader.PropertyToID("_Texture2D_A2")
+    };
+
     private const int SkirtNorth = 1 << 0;
     private const int SkirtEast = 1 << 1;
     private const int SkirtSouth = 1 << 2;
@@ -23,10 +44,29 @@ public class InfinitMeshTerrain : MonoBehaviour
     [SerializeField, Min(1)] private int viewDistanceInChunks = 8;
     [SerializeField, Min(16f)] private float chunkSize = 1024f;
     [SerializeField, Min(5)] private int verticesPerLine = 33;
+    [Tooltip("Multiplies only the source grid density used by LOD 0. Higher LODs keep skipping over this denser grid.")]
+    [SerializeField, Range(1, 4)] private int lod0VertexMultiplier = 2;
     [SerializeField, Min(1f)] private float viewerMoveThreshold = 32f;
 
     [Header("Rendering")]
     [SerializeField] private Material chunkMaterial;
+    [SerializeField] private TerrainHeightLayer[] terrainLayers =
+    {
+        new TerrainHeightLayer("Low", SplatChannel.Map0R, 0f, 80f),
+        new TerrainHeightLayer("Grass", SplatChannel.Map0G, 170f, 80f),
+        new TerrainHeightLayer("Rock", SplatChannel.Map0B, 420f, 110f),
+        new TerrainHeightLayer("Snow", SplatChannel.Map0A, 620f, 90f),
+        new TerrainHeightLayer("Layer 5", SplatChannel.Map1R, 900f, 80f),
+        new TerrainHeightLayer("Layer 6", SplatChannel.Map1G, 1000f, 80f),
+        new TerrainHeightLayer("Layer 7", SplatChannel.Map1B, 1100f, 80f),
+        new TerrainHeightLayer("Layer 8", SplatChannel.Map1A, 1200f, 80f)
+    };
+    [Header("Slope Texturing")]
+    [SerializeField] private bool enableSlopeRock = true;
+    [SerializeField] private SplatChannel slopeRockChannel = SplatChannel.Map0B;
+    [SerializeField, Range(0f, 90f)] private float slopeRockStartAngle = 35f;
+    [SerializeField, Range(0f, 90f)] private float slopeRockFullAngle = 55f;
+    [SerializeField, Range(0f, 1f)] private float slopeRockStrength = 0.9f;
     [SerializeField, Range(0, 5)] private int maxLod = 3;
     [SerializeField, Min(0f)] private float skirtDepth = 32f;
     [SerializeField] private bool useCollider;
@@ -137,6 +177,7 @@ public class InfinitMeshTerrain : MonoBehaviour
             verticesPerLine += 1;
         }
 
+        lod0VertexMultiplier = Mathf.Clamp(lod0VertexMultiplier, 1, 4);
         heightMultiplier = Mathf.Max(1f, heightMultiplier);
         maxConcurrentMeshTasks = Mathf.Max(1, maxConcurrentMeshTasks);
         cachedChunkPadding = Mathf.Max(0, cachedChunkPadding);
@@ -145,7 +186,13 @@ public class InfinitMeshTerrain : MonoBehaviour
         terraceSteps = Mathf.Max(1, terraceSteps);
         terrainSplineInfluence = Mathf.Clamp01(terrainSplineInfluence);
         noiseLayerInfluence = Mathf.Clamp01(noiseLayerInfluence);
+        slopeRockChannel = (SplatChannel)Mathf.Clamp((int)slopeRockChannel, 0, MaxTerrainLayerCount - 1);
+        slopeRockStartAngle = Mathf.Clamp(slopeRockStartAngle, 0f, 89.9f);
+        slopeRockFullAngle = Mathf.Clamp(slopeRockFullAngle, slopeRockStartAngle + 0.01f, 90f);
+        slopeRockStrength = Mathf.Clamp01(slopeRockStrength);
+        ValidateTerrainLayers();
         ApplyChunkMaterialToRuntimeChunks();
+        RequestVisibleChunkRebuilds();
     }
 
     public void ForceRefresh()
@@ -298,7 +345,7 @@ public class InfinitMeshTerrain : MonoBehaviour
     private TerrainBuildTask ScheduleBuild(Vector2Int coord, int lod, EdgeStitching stitching)
     {
         int step = GetLodStep(lod);
-        int segmentCount = verticesPerLine - 1;
+        int segmentCount = GetEffectiveSegmentCount();
         int resolution = segmentCount / step + 1;
         int baseVertexCount = resolution * resolution;
         int skirtSideMask = skirtDepth > 0f ? CalculateSkirtSideMask(coord) : 0;
@@ -418,7 +465,7 @@ public class InfinitMeshTerrain : MonoBehaviour
 
             if (canApply)
             {
-                chunk.Apply(task, chunkMaterial, useCollider, colliderMaxLod);
+                chunk.Apply(task, chunkMaterial, useCollider, colliderMaxLod, terrainLayers, CreateSlopeTextureSettings());
             }
             else if (chunks.ContainsKey(coord) && visibleChunkCoords.Contains(coord))
             {
@@ -456,8 +503,8 @@ public class InfinitMeshTerrain : MonoBehaviour
     private void ConfigureTerrainRenderer(MeshRenderer meshRenderer)
     {
         meshRenderer.sharedMaterial = chunkMaterial;
-        meshRenderer.shadowCastingMode = ShadowCastingMode.Off;
-        meshRenderer.receiveShadows = false;
+        meshRenderer.shadowCastingMode = ShadowCastingMode.On;
+        meshRenderer.receiveShadows = true;
         meshRenderer.renderingLayerMask = 1u;
         meshRenderer.allowOcclusionWhenDynamic = true;
     }
@@ -467,7 +514,44 @@ public class InfinitMeshTerrain : MonoBehaviour
         foreach (TerrainChunk chunk in chunks.Values)
         {
             chunk.SetMaterial(chunkMaterial);
+            chunk.ApplyTerrainLayerTextures(terrainLayers);
         }
+    }
+
+    private void RequestVisibleChunkRebuilds()
+    {
+        foreach (Vector2Int coord in visibleChunkCoords)
+        {
+            RequestBuild(coord);
+        }
+    }
+
+    private void ValidateTerrainLayers()
+    {
+        if (terrainLayers == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < terrainLayers.Length; i++)
+        {
+            TerrainHeightLayer layer = terrainLayers[i];
+            layer.blendRange = Mathf.Max(0f, layer.blendRange);
+            layer.channel = (SplatChannel)Mathf.Clamp((int)layer.channel, 0, MaxTerrainLayerCount - 1);
+            terrainLayers[i] = layer;
+        }
+    }
+
+    private SlopeTextureSettings CreateSlopeTextureSettings()
+    {
+        return new SlopeTextureSettings
+        {
+            Enabled = enableSlopeRock && slopeRockStrength > 0f,
+            Channel = slopeRockChannel,
+            StartAngle = slopeRockStartAngle,
+            FullAngle = slopeRockFullAngle,
+            Strength = slopeRockStrength
+        };
     }
 
     private void CopyNoiseLayers(NativeArray<NoiseLayerData> destination)
@@ -595,8 +679,11 @@ public class InfinitMeshTerrain : MonoBehaviour
 
     private int GetLodStep(int lod)
     {
-        int segmentCount = Mathf.Max(1, verticesPerLine - 1);
-        int step = 1 << Mathf.Clamp(lod, 0, maxLod);
+        int segmentCount = GetEffectiveSegmentCount();
+        int clampedLod = Mathf.Clamp(lod, 0, maxLod);
+        int step = clampedLod == 0
+            ? 1
+            : Mathf.Max(1, lod0VertexMultiplier) << clampedLod;
 
         while (step > 1 && segmentCount % step != 0)
         {
@@ -604,6 +691,12 @@ public class InfinitMeshTerrain : MonoBehaviour
         }
 
         return Mathf.Max(1, step);
+    }
+
+    private int GetEffectiveSegmentCount()
+    {
+        int baseSegmentCount = Mathf.Max(1, verticesPerLine - 1);
+        return baseSegmentCount * Mathf.Max(1, lod0VertexMultiplier);
     }
 
     private EdgeStitching CalculateDesiredStitching(Vector2Int coord, int lod)
@@ -744,12 +837,55 @@ public class InfinitMeshTerrain : MonoBehaviour
         }
     }
 
+    [Serializable]
+    private enum SplatChannel
+    {
+        [InspectorName("Splat Map 0 / R")] Map0R,
+        [InspectorName("Splat Map 0 / G")] Map0G,
+        [InspectorName("Splat Map 0 / B")] Map0B,
+        [InspectorName("Splat Map 0 / A")] Map0A,
+        [InspectorName("Splat Map 1 / R")] Map1R,
+        [InspectorName("Splat Map 1 / G")] Map1G,
+        [InspectorName("Splat Map 1 / B")] Map1B,
+        [InspectorName("Splat Map 1 / A")] Map1A
+    }
+
+    [Serializable]
+    private struct TerrainHeightLayer
+    {
+        public TerrainHeightLayer(string layerName, SplatChannel channel, float startHeight, float blendRange)
+        {
+            this.layerName = layerName;
+            texture = null;
+            this.channel = channel;
+            this.startHeight = startHeight;
+            this.blendRange = blendRange;
+        }
+
+        public string layerName;
+        public Texture2D texture;
+        public SplatChannel channel;
+        public float startHeight;
+        [Min(0f)] public float blendRange;
+    }
+
+    private struct SlopeTextureSettings
+    {
+        public bool Enabled;
+        public SplatChannel Channel;
+        public float StartAngle;
+        public float FullAngle;
+        public float Strength;
+    }
+
     private sealed class TerrainChunk : IDisposable
     {
         private readonly GameObject gameObject;
         private readonly MeshRenderer meshRenderer;
         private readonly MeshCollider meshCollider;
         private readonly Mesh mesh;
+        private MaterialPropertyBlock propertyBlock;
+        private readonly Texture2D[] splatMaps = new Texture2D[SplatMapCount];
 
         public TerrainChunk(
             Vector2Int coord,
@@ -778,7 +914,13 @@ public class InfinitMeshTerrain : MonoBehaviour
         public EdgeStitching DesiredStitching { get; set; }
         public bool HasMesh { get; private set; }
 
-        public void Apply(TerrainBuildTask task, Material material, bool useCollider, int colliderMaxLod)
+        public void Apply(
+            TerrainBuildTask task,
+            Material material,
+            bool useCollider,
+            int colliderMaxLod,
+            TerrainHeightLayer[] terrainLayers,
+            SlopeTextureSettings slopeTextureSettings)
         {
             mesh.Clear();
             mesh.indexFormat = task.Vertices.Length > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
@@ -790,8 +932,9 @@ public class InfinitMeshTerrain : MonoBehaviour
             mesh.RecalculateBounds();
 
             SetMaterial(material);
-            meshRenderer.shadowCastingMode = ShadowCastingMode.Off;
-            meshRenderer.receiveShadows = false;
+            RebuildSplatMap(task, terrainLayers, slopeTextureSettings);
+            meshRenderer.shadowCastingMode = ShadowCastingMode.On;
+            meshRenderer.receiveShadows = true;
             meshRenderer.renderingLayerMask = 1u;
 
             if (meshCollider != null)
@@ -813,6 +956,14 @@ public class InfinitMeshTerrain : MonoBehaviour
         public void SetMaterial(Material material)
         {
             meshRenderer.sharedMaterial = material;
+            ApplyPropertyBlock();
+        }
+
+        public void ApplyTerrainLayerTextures(TerrainHeightLayer[] terrainLayers)
+        {
+            EnsurePropertyBlock();
+            SetLayerTextures(terrainLayers);
+            ApplyPropertyBlock();
         }
 
         public void SetVisible(bool visible)
@@ -825,6 +976,8 @@ public class InfinitMeshTerrain : MonoBehaviour
 
         public void Dispose()
         {
+            DestroySplatMaps();
+
             if (Application.isPlaying)
             {
                 Destroy(mesh);
@@ -835,6 +988,261 @@ public class InfinitMeshTerrain : MonoBehaviour
                 DestroyImmediate(mesh);
                 DestroyImmediate(gameObject);
             }
+        }
+
+        private void RebuildSplatMap(
+            TerrainBuildTask task,
+            TerrainHeightLayer[] terrainLayers,
+            SlopeTextureSettings slopeTextureSettings)
+        {
+            int resolution = task.Resolution;
+            if (resolution <= 0 || task.BaseVertexCount <= 0)
+            {
+                return;
+            }
+
+            for (int mapIndex = 0; mapIndex < splatMaps.Length; mapIndex++)
+            {
+                Texture2D splatMap = splatMaps[mapIndex];
+                if (splatMap != null && splatMap.width == resolution && splatMap.height == resolution)
+                {
+                    continue;
+                }
+
+                DestroySplatMap(mapIndex);
+                splatMaps[mapIndex] = new Texture2D(resolution, resolution, TextureFormat.RGBA32, false, true)
+                {
+                    name = $"Terrain SplatMap {mapIndex} {Coord.x}, {Coord.y}",
+                    filterMode = FilterMode.Bilinear,
+                    wrapMode = TextureWrapMode.Clamp,
+                    hideFlags = HideFlags.DontSave
+                };
+            }
+
+            TerrainHeightLayer[] sortedLayers = CopySortedLayers(terrainLayers);
+            Color32[] pixels0 = new Color32[resolution * resolution];
+            Color32[] pixels1 = new Color32[pixels0.Length];
+
+            for (int i = 0; i < pixels0.Length; i++)
+            {
+                float height = task.Vertices[i].y;
+                SplatWeights weights = EvaluateSplatWeights(height, sortedLayers);
+                weights = ApplySlopeTexture(weights, task.Normals[i], slopeTextureSettings);
+                pixels0[i] = ToColor32(weights.Map0);
+                pixels1[i] = ToColor32(weights.Map1);
+            }
+
+            splatMaps[0].SetPixels32(pixels0);
+            splatMaps[0].Apply(false, false);
+            splatMaps[1].SetPixels32(pixels1);
+            splatMaps[1].Apply(false, false);
+
+            EnsurePropertyBlock();
+            for (int mapIndex = 0; mapIndex < splatMaps.Length; mapIndex++)
+            {
+                propertyBlock.SetTexture(SplatMapPropertyIds[mapIndex], splatMaps[mapIndex]);
+            }
+
+            SetLayerTextures(sortedLayers);
+            ApplyPropertyBlock();
+        }
+
+        private void SetLayerTextures(TerrainHeightLayer[] terrainLayers)
+        {
+            if (terrainLayers == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < terrainLayers.Length; i++)
+            {
+                TerrainHeightLayer layer = terrainLayers[i];
+                if (layer.texture == null)
+                {
+                    continue;
+                }
+
+                int channelIndex = Mathf.Clamp((int)layer.channel, 0, LayerTexturePropertyIds.Length - 1);
+                propertyBlock.SetTexture(LayerTexturePropertyIds[channelIndex], layer.texture);
+            }
+        }
+
+        private void EnsurePropertyBlock()
+        {
+            propertyBlock ??= new MaterialPropertyBlock();
+            meshRenderer.GetPropertyBlock(propertyBlock);
+        }
+
+        private void ApplyPropertyBlock()
+        {
+            if (propertyBlock != null)
+            {
+                meshRenderer.SetPropertyBlock(propertyBlock);
+            }
+        }
+
+        private void DestroySplatMaps()
+        {
+            for (int mapIndex = 0; mapIndex < splatMaps.Length; mapIndex++)
+            {
+                DestroySplatMap(mapIndex);
+            }
+        }
+
+        private void DestroySplatMap(int mapIndex)
+        {
+            Texture2D splatMap = splatMaps[mapIndex];
+            if (splatMap == null)
+            {
+                return;
+            }
+
+            if (Application.isPlaying)
+            {
+                Destroy(splatMap);
+            }
+            else
+            {
+                DestroyImmediate(splatMap);
+            }
+
+            splatMaps[mapIndex] = null;
+        }
+
+        private static TerrainHeightLayer[] CopySortedLayers(TerrainHeightLayer[] terrainLayers)
+        {
+            if (terrainLayers == null || terrainLayers.Length == 0)
+            {
+                return Array.Empty<TerrainHeightLayer>();
+            }
+
+            TerrainHeightLayer[] sortedLayers = new TerrainHeightLayer[terrainLayers.Length];
+            Array.Copy(terrainLayers, sortedLayers, terrainLayers.Length);
+            Array.Sort(sortedLayers, (a, b) => a.startHeight.CompareTo(b.startHeight));
+            return sortedLayers;
+        }
+
+        private struct SplatWeights
+        {
+            public Vector4 Map0;
+            public Vector4 Map1;
+        }
+
+        private static SplatWeights EvaluateSplatWeights(float height, TerrainHeightLayer[] sortedLayers)
+        {
+            SplatWeights weights = default;
+
+            if (sortedLayers.Length == 0)
+            {
+                weights.Map0.x = 1f;
+                return weights;
+            }
+
+            AddWeight(ref weights, sortedLayers[0].channel, 1f);
+
+            for (int i = 1; i < sortedLayers.Length; i++)
+            {
+                TerrainHeightLayer layer = sortedLayers[i];
+                float blendRange = Mathf.Max(0.0001f, layer.blendRange);
+                float blend = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(layer.startHeight, layer.startHeight + blendRange, height));
+
+                weights.Map0 *= 1f - blend;
+                weights.Map1 *= 1f - blend;
+                AddWeight(ref weights, layer.channel, blend);
+            }
+
+            return NormalizeWeights(weights);
+        }
+
+        private static SplatWeights ApplySlopeTexture(
+            SplatWeights weights,
+            Vector3 normal,
+            SlopeTextureSettings settings)
+        {
+            if (!settings.Enabled)
+            {
+                return weights;
+            }
+
+            float normalY = Mathf.Clamp(normal.y, -1f, 1f);
+            float slopeAngle = Mathf.Acos(normalY) * Mathf.Rad2Deg;
+            float slopeBlend = Mathf.SmoothStep(
+                0f,
+                1f,
+                Mathf.InverseLerp(settings.StartAngle, settings.FullAngle, slopeAngle));
+            float rockAmount = Mathf.Clamp01(slopeBlend * settings.Strength);
+
+            if (rockAmount <= 0.0001f)
+            {
+                return weights;
+            }
+
+            weights.Map0 *= 1f - rockAmount;
+            weights.Map1 *= 1f - rockAmount;
+            AddWeight(ref weights, settings.Channel, rockAmount);
+            return NormalizeWeights(weights);
+        }
+
+        private static SplatWeights NormalizeWeights(SplatWeights weights)
+        {
+            float sum = SumWeights(weights.Map0) + SumWeights(weights.Map1);
+            if (sum > 0.0001f)
+            {
+                weights.Map0 /= sum;
+                weights.Map1 /= sum;
+            }
+
+            return weights;
+        }
+
+        private static void AddWeight(ref SplatWeights weights, SplatChannel channel, float value)
+        {
+            switch (channel)
+            {
+                case SplatChannel.Map0G:
+                    weights.Map0.y += value;
+                    break;
+                case SplatChannel.Map0B:
+                    weights.Map0.z += value;
+                    break;
+                case SplatChannel.Map0A:
+                    weights.Map0.w += value;
+                    break;
+                case SplatChannel.Map1R:
+                    weights.Map1.x += value;
+                    break;
+                case SplatChannel.Map1G:
+                    weights.Map1.y += value;
+                    break;
+                case SplatChannel.Map1B:
+                    weights.Map1.z += value;
+                    break;
+                case SplatChannel.Map1A:
+                    weights.Map1.w += value;
+                    break;
+                default:
+                    weights.Map0.x += value;
+                    break;
+            }
+        }
+
+        private static Color32 ToColor32(Vector4 weights)
+        {
+            return new Color32(
+                ToByte(weights.x),
+                ToByte(weights.y),
+                ToByte(weights.z),
+                ToByte(weights.w));
+        }
+
+        private static float SumWeights(Vector4 weights)
+        {
+            return weights.x + weights.y + weights.z + weights.w;
+        }
+
+        private static byte ToByte(float value)
+        {
+            return (byte)Mathf.RoundToInt(Mathf.Clamp01(value) * 255f);
         }
     }
 
@@ -858,6 +1266,7 @@ public class InfinitMeshTerrain : MonoBehaviour
             SurfaceIndexCount = surfaceIndexCount;
             SkirtIndexCount = skirtIndexCount;
             BaseVertexCount = baseVertexCount;
+            Resolution = Mathf.RoundToInt(Mathf.Sqrt(baseVertexCount));
             Vertices = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Normals = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Uvs = new NativeArray<Vector2>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -872,6 +1281,7 @@ public class InfinitMeshTerrain : MonoBehaviour
         public int SurfaceIndexCount { get; }
         public int SkirtIndexCount { get; }
         public int BaseVertexCount { get; }
+        public int Resolution { get; }
         public JobHandle Handle;
         public NativeArray<Vector3> Vertices;
         public NativeArray<Vector3> Normals;
