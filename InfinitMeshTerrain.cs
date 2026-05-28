@@ -28,6 +28,18 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         Shader.PropertyToID("_Texture2D_A2")
     };
 
+    private static readonly int[] LayerColorPropertyIds =
+    {
+        Shader.PropertyToID("_Layer1Color"),
+        Shader.PropertyToID("_Layer2Color"),
+        Shader.PropertyToID("_Layer3Color"),
+        Shader.PropertyToID("_Layer4Color"),
+        Shader.PropertyToID("_Layer5Color"),
+        Shader.PropertyToID("_Layer6Color"),
+        Shader.PropertyToID("_Layer7Color"),
+        Shader.PropertyToID("_Layer8Color")
+    };
+
     private const int SkirtNorth = 1 << 0;
     private const int SkirtEast = 1 << 1;
     private const int SkirtSouth = 1 << 2;

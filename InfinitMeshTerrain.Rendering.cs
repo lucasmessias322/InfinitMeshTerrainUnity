@@ -17,7 +17,7 @@ public partial class InfinitMeshTerrain
         foreach (TerrainChunk chunk in chunks.Values)
         {
             chunk.SetMaterial(chunkMaterial);
-            chunk.ApplyTerrainLayerTextures(terrainLayers);
+            chunk.ApplyTerrainLayerProperties(terrainLayers);
         }
     }
 
@@ -33,8 +33,14 @@ public partial class InfinitMeshTerrain
             TerrainHeightLayer layer = terrainLayers[i];
             layer.blendRange = Mathf.Max(0f, layer.blendRange);
             layer.channel = (SplatChannel)Mathf.Clamp((int)layer.channel, 0, MaxTerrainLayerCount - 1);
+            layer.color = NormalizeLayerColor(layer.color);
             terrainLayers[i] = layer;
         }
+    }
+
+    private static Color NormalizeLayerColor(Color color)
+    {
+        return color.a <= 0f && color.maxColorComponent <= 0f ? Color.white : color;
     }
 
     private SlopeTextureSettings CreateSlopeTextureSettings()

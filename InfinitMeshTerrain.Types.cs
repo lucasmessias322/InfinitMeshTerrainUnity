@@ -77,6 +77,7 @@ public partial class InfinitMeshTerrain
         {
             this.layerName = layerName;
             texture = null;
+            color = Color.white;
             this.channel = channel;
             this.startHeight = startHeight;
             this.blendRange = blendRange;
@@ -84,6 +85,7 @@ public partial class InfinitMeshTerrain
 
         public string layerName;
         public Texture2D texture;
+        public Color color;
         public SplatChannel channel;
         public float startHeight;
         [Min(0f)] public float blendRange;

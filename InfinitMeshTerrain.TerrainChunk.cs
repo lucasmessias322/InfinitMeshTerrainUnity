@@ -85,10 +85,10 @@ public partial class InfinitMeshTerrain
             ApplyPropertyBlock();
         }
 
-        public void ApplyTerrainLayerTextures(TerrainHeightLayer[] terrainLayers)
+        public void ApplyTerrainLayerProperties(TerrainHeightLayer[] terrainLayers)
         {
             EnsurePropertyBlock();
-            SetLayerTextures(terrainLayers);
+            SetLayerProperties(terrainLayers);
             ApplyPropertyBlock();
         }
 
@@ -169,11 +169,11 @@ public partial class InfinitMeshTerrain
                 propertyBlock.SetTexture(SplatMapPropertyIds[mapIndex], splatMaps[mapIndex]);
             }
 
-            SetLayerTextures(sortedLayers);
+            SetLayerProperties(sortedLayers);
             ApplyPropertyBlock();
         }
 
-        private void SetLayerTextures(TerrainHeightLayer[] terrainLayers)
+        private void SetLayerProperties(TerrainHeightLayer[] terrainLayers)
         {
             if (terrainLayers == null)
             {
@@ -183,13 +183,13 @@ public partial class InfinitMeshTerrain
             for (int i = 0; i < terrainLayers.Length; i++)
             {
                 TerrainHeightLayer layer = terrainLayers[i];
-                if (layer.texture == null)
+                int channelIndex = Mathf.Clamp((int)layer.channel, 0, LayerTexturePropertyIds.Length - 1);
+                if (layer.texture != null)
                 {
-                    continue;
+                    propertyBlock.SetTexture(LayerTexturePropertyIds[channelIndex], layer.texture);
                 }
 
-                int channelIndex = Mathf.Clamp((int)layer.channel, 0, LayerTexturePropertyIds.Length - 1);
-                propertyBlock.SetTexture(LayerTexturePropertyIds[channelIndex], layer.texture);
+                propertyBlock.SetColor(LayerColorPropertyIds[channelIndex], NormalizeLayerColor(layer.color));
             }
         }
 
