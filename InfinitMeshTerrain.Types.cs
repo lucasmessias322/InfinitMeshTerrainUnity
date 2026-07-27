@@ -58,7 +58,7 @@ public partial class InfinitMeshTerrain
     }
 
     [Serializable]
-    private enum SplatChannel
+    public enum SplatChannel
     {
         [InspectorName("Splat Map 0 / R")] Map0R,
         [InspectorName("Splat Map 0 / G")] Map0G,
@@ -134,5 +134,52 @@ public partial class InfinitMeshTerrain
         public float HeightThreshold;
         public float2 Offset;
         public float BlendRange;
+    }
+
+    private struct GrassInstanceData
+    {
+        public float4 PositionScale;
+        public float4 NormalYaw;
+        public float4 ColorWidth;
+    }
+
+    private struct GrassTerrainLayerData
+    {
+        public int Channel;
+        public float StartHeight;
+        public float BlendRange;
+    }
+
+    private struct GrassBuildSettings
+    {
+        public int TerrainSeed;
+        public int GrassSeed;
+        public int Channel;
+        public float DensityPerSquareMeter;
+        public float CellSize;
+        public float Jitter;
+        public int MaxInstancesPerCell;
+        public float LayerThreshold;
+        public float MinHeight;
+        public float MaxHeight;
+        public float HeightFadeRange;
+        public float MinSlopeAngle;
+        public float MaxSlopeAngle;
+        public float SlopeFadeRange;
+        public float BladeHeight;
+        public float BladeHeightVariation;
+        public float BladeWidth;
+        public float BladeWidthVariation;
+        public float ColorVariation;
+        public float NormalAlignment;
+        public float SurfaceOffset;
+        public float CoverageNoiseFrequency;
+        public float CoverageNoiseStrength;
+    }
+
+    private struct GrassChunkBounds
+    {
+        public float3 Min;
+        public float3 Max;
     }
 }

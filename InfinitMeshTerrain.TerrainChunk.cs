@@ -1,10 +1,11 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
 public partial class InfinitMeshTerrain
 {
-    private sealed class TerrainChunk : IDisposable
+    private sealed partial class TerrainChunk : IDisposable
     {
         private readonly GameObject gameObject;
         private readonly MeshRenderer meshRenderer;
@@ -46,7 +47,15 @@ public partial class InfinitMeshTerrain
             bool useCollider,
             int colliderMaxLod,
             TerrainHeightLayer[] terrainLayers,
-            SlopeTextureSettings slopeTextureSettings)
+            SlopeTextureSettings slopeTextureSettings,
+            TreeSettingsSO treeSettings,
+            IReadOnlyList<TreeRenderPrototype> treeRenderPrototypes,
+            float treeTotalDensity,
+            bool shouldBuildTrees,
+            int terrainSeed,
+            float chunkSize,
+            bool enableWater,
+            float waterHeight)
         {
             mesh.Clear();
             mesh.indexFormat = task.Vertices.Length > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
@@ -77,6 +86,8 @@ public partial class InfinitMeshTerrain
             CurrentLod = task.Lod;
             CurrentStitching = task.Stitching;
             HasMesh = true;
+            ApplyGrass(task);
+            ApplyTrees(task, treeSettings, treeRenderPrototypes, treeTotalDensity, shouldBuildTrees, terrainSeed, chunkSize, enableWater, waterHeight, terrainLayers, slopeTextureSettings);
         }
 
         public void SetMaterial(Material material)
@@ -102,6 +113,8 @@ public partial class InfinitMeshTerrain
 
         public void Dispose()
         {
+            ClearGrass();
+            ClearTrees();
             DestroySplatMaps();
 
             if (Application.isPlaying)

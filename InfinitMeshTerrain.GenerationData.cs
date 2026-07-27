@@ -7,38 +7,65 @@ public partial class InfinitMeshTerrain
 {
     private TerrainSettings CreateTerrainSettings()
     {
+        TerrainShapeSettingsSO shapeSettings = terrainShapeSettings;
+
         return new TerrainSettings
         {
-            NoiseOffset = noiseOffset,
-            TerrainSeed = terrainSeed,
-            ContinentFrequency = continentFrequency,
-            DomainWarpFrequency = domainWarpFrequency,
-            DomainWarpStrength = domainWarpStrength,
-            BiomeFrequency = biomeFrequency,
-            RidgeFrequency = ridgeFrequency,
-            DetailFrequency = detailFrequency,
-            SeaCoverage = seaCoverage,
-            MountainStart = mountainStart,
-            PlainsStrength = plainsStrength,
-            HillsStrength = hillsStrength,
-            MountainStrength = mountainStrength,
-            CliffStrength = cliffStrength,
-            DetailStrength = detailStrength,
-            TerraceStrength = terraceStrength,
-            TerraceSteps = terraceSteps,
-            TerrainSplineInfluence = terrainSplineInfluence,
-            NoiseLayerInfluence = noiseLayerInfluence
+            NoiseOffset = shapeSettings != null ? shapeSettings.NoiseOffset : TerrainShapeSettingsSO.DefaultNoiseOffset,
+            TerrainSeed = GetTerrainSeed(),
+            ContinentFrequency = shapeSettings != null ? shapeSettings.ContinentFrequency : TerrainShapeSettingsSO.DefaultContinentFrequency,
+            DomainWarpFrequency = shapeSettings != null ? shapeSettings.DomainWarpFrequency : TerrainShapeSettingsSO.DefaultDomainWarpFrequency,
+            DomainWarpStrength = shapeSettings != null ? shapeSettings.DomainWarpStrength : TerrainShapeSettingsSO.DefaultDomainWarpStrength,
+            BiomeFrequency = shapeSettings != null ? shapeSettings.BiomeFrequency : TerrainShapeSettingsSO.DefaultBiomeFrequency,
+            RidgeFrequency = shapeSettings != null ? shapeSettings.RidgeFrequency : TerrainShapeSettingsSO.DefaultRidgeFrequency,
+            DetailFrequency = shapeSettings != null ? shapeSettings.DetailFrequency : TerrainShapeSettingsSO.DefaultDetailFrequency,
+            SeaCoverage = shapeSettings != null ? shapeSettings.SeaCoverage : TerrainShapeSettingsSO.DefaultSeaCoverage,
+            MountainStart = shapeSettings != null ? shapeSettings.MountainStart : TerrainShapeSettingsSO.DefaultMountainStart,
+            PlainsStrength = shapeSettings != null ? shapeSettings.PlainsStrength : TerrainShapeSettingsSO.DefaultPlainsStrength,
+            HillsStrength = shapeSettings != null ? shapeSettings.HillsStrength : TerrainShapeSettingsSO.DefaultHillsStrength,
+            MountainStrength = shapeSettings != null ? shapeSettings.MountainStrength : TerrainShapeSettingsSO.DefaultMountainStrength,
+            CliffStrength = shapeSettings != null ? shapeSettings.CliffStrength : TerrainShapeSettingsSO.DefaultCliffStrength,
+            DetailStrength = shapeSettings != null ? shapeSettings.DetailStrength : TerrainShapeSettingsSO.DefaultDetailStrength,
+            TerraceStrength = shapeSettings != null ? shapeSettings.TerraceStrength : TerrainShapeSettingsSO.DefaultTerraceStrength,
+            TerraceSteps = shapeSettings != null ? shapeSettings.TerraceSteps : TerrainShapeSettingsSO.DefaultTerraceSteps,
+            TerrainSplineInfluence = shapeSettings != null ? shapeSettings.TerrainSplineInfluence : TerrainShapeSettingsSO.DefaultTerrainSplineInfluence,
+            NoiseLayerInfluence = shapeSettings != null ? shapeSettings.NoiseLayerInfluence : TerrainShapeSettingsSO.DefaultNoiseLayerInfluence
         };
+    }
+
+    private float GetTerrainHeightMultiplier()
+    {
+        return terrainShapeSettings != null
+            ? terrainShapeSettings.HeightMultiplier
+            : TerrainShapeSettingsSO.DefaultHeightMultiplier;
+    }
+
+    private int GetTerrainSeed()
+    {
+        return terrainShapeSettings != null
+            ? terrainShapeSettings.TerrainSeed
+            : TerrainShapeSettingsSO.DefaultTerrainSeed;
+    }
+
+    private TerrainSplinesSO GetTerrainSplines()
+    {
+        return terrainShapeSettings != null ? terrainShapeSettings.TerrainSplines : null;
+    }
+
+    private NoiseLayersSO GetNoiseSettings()
+    {
+        return terrainShapeSettings != null ? terrainShapeSettings.NoiseSettings : null;
     }
 
     private void CopyNoiseLayers(NativeArray<NoiseLayerData> destination)
     {
-        if (!destination.IsCreated || destination.Length == 0 || noiseSettings == null || noiseSettings.NoiseLayers == null)
+        NoiseLayersSO settings = GetNoiseSettings();
+        if (!destination.IsCreated || destination.Length == 0 || settings == null || settings.NoiseLayers == null)
         {
             return;
         }
 
-        IReadOnlyList<NoiseLayer> source = noiseSettings.NoiseLayers;
+        IReadOnlyList<NoiseLayer> source = settings.NoiseLayers;
         for (int i = 0; i < destination.Length; i++)
         {
             NoiseLayer layer = source[i];
@@ -61,12 +88,14 @@ public partial class InfinitMeshTerrain
 
     private int GetNoiseLayerCount()
     {
-        return noiseSettings != null && noiseSettings.NoiseLayers != null ? noiseSettings.NoiseLayers.Count : 0;
+        NoiseLayersSO settings = GetNoiseSettings();
+        return settings != null && settings.NoiseLayers != null ? settings.NoiseLayers.Count : 0;
     }
 
     private void CopyTerrainSplineSamples(NativeArray<float> destination)
     {
-        if (!destination.IsCreated || destination.Length == 0 || terrainSplines == null)
+        TerrainSplinesSO splines = GetTerrainSplines();
+        if (!destination.IsCreated || destination.Length == 0 || splines == null)
         {
             return;
         }
@@ -79,13 +108,13 @@ public partial class InfinitMeshTerrain
             for (int i = 0; i < TerrainSplineSampleCount; i++)
             {
                 float input = i / (float)(TerrainSplineSampleCount - 1);
-                destination[baseIndex + i] = terrainSplines.Evaluate(splineChannel, input);
+                destination[baseIndex + i] = splines.Evaluate(splineChannel, input);
             }
         }
     }
 
     private int GetTerrainSplineSampleCount()
     {
-        return terrainSplines != null ? TerrainSplineSampleCount * TerrainSplineChannelCount : 0;
+        return GetTerrainSplines() != null ? TerrainSplineSampleCount * TerrainSplineChannelCount : 0;
     }
 }

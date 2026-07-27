@@ -1,0 +1,256 @@
+Shader "InfinitMeshTerrain/Instanced Grass Indirect"
+{
+    Properties
+    {
+        _BaseColor ("Base Color", Color) = (0.16, 0.34, 0.08, 1)
+        _TipColor ("Tip Color", Color) = (0.54, 0.76, 0.24, 1)
+        _BaseMap ("Base Map", 2D) = "white" {}
+        _UseBaseMap ("Use Base Map", Float) = 0
+        _ReceiveShadows ("Receive Shadows", Float) = 1
+        _AmbientStrength ("Ambient Strength", Range(0, 1)) = 1
+        _AdditionalLightsStrength ("Additional Lights Strength", Range(0, 32)) = 2
+        _AdditionalLightsWrap ("Additional Lights Wrap", Range(0, 1)) = 0.55
+        _AdditionalLightsAlbedoInfluence ("Additional Lights Albedo Influence", Range(0, 1)) = 0.55
+        _Cutoff ("Alpha Cutoff", Range(0, 1)) = 0.18
+    }
+
+    SubShader
+    {
+        Tags
+        {
+            "RenderPipeline" = "UniversalPipeline"
+            "Queue" = "AlphaTest"
+            "RenderType" = "TransparentCutout"
+        }
+
+        Pass
+        {
+            Name "ForwardLit"
+            Tags { "LightMode" = "UniversalForward" }
+
+            Cull Off
+            ZWrite On
+            ZTest LEqual
+
+            HLSLPROGRAM
+            #pragma target 4.5
+            #pragma vertex Vert
+            #pragma fragment Frag
+            #pragma multi_compile_instancing
+            #pragma multi_compile_fog
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
+            #pragma multi_compile _ _CLUSTER_LIGHT_LOOP
+            #pragma multi_compile_fragment _ _SHADOWS_SOFT
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+
+            struct GrassInstance
+            {
+                float4 positionScale;
+                float4 normalYaw;
+                float4 colorWidth;
+            };
+
+            StructuredBuffer<GrassInstance> _GrassInstances;
+            TEXTURE2D(_BaseMap);
+            SAMPLER(sampler_BaseMap);
+
+            CBUFFER_START(UnityPerMaterial)
+                half4 _BaseColor;
+                half4 _TipColor;
+                half _UseBaseMap;
+                half _ReceiveShadows;
+                half _AmbientStrength;
+                half _AdditionalLightsStrength;
+                half _AdditionalLightsWrap;
+                half _AdditionalLightsAlbedoInfluence;
+                half _Cutoff;
+            CBUFFER_END
+
+            float3 _ViewerPosition;
+            float4 _FadeDistances;
+            float4 _Wind;
+            float4 _MeshGrounding;
+
+            struct Attributes
+            {
+                float3 positionOS : POSITION;
+                float2 uv : TEXCOORD0;
+                uint instanceID : SV_InstanceID;
+            };
+
+            struct Varyings
+            {
+                float4 positionHCS : SV_POSITION;
+                float2 uv : TEXCOORD0;
+                half3 normalWS : TEXCOORD1;
+                half3 color : TEXCOORD2;
+                half fade : TEXCOORD3;
+                half fogFactor : TEXCOORD4;
+                float3 positionWS : TEXCOORD5;
+#if (defined(_ADDITIONAL_LIGHTS) || defined(_ADDITIONAL_LIGHTS_VERTEX)) && !USE_CLUSTER_LIGHT_LOOP
+                half3 vertexLighting : TEXCOORD6;
+#endif
+            };
+
+            float DitherNoise(float2 pixelPosition)
+            {
+                return frac(52.9829189 * frac(dot(pixelPosition, float2(0.06711056, 0.00583715))));
+            }
+
+            half3 EvaluateDirectLight(Light light, half3 normalWS, half receiveShadows)
+            {
+                half shadowAttenuation = lerp(half(1.0), light.shadowAttenuation, saturate(receiveShadows));
+                half ndotl = saturate(dot(normalWS, light.direction));
+                return light.color * (ndotl * light.distanceAttenuation * shadowAttenuation);
+            }
+
+            half EvaluateWrappedDiffuse(half3 normalWS, half3 lightDirectionWS, half wrap)
+            {
+                half wrappedNdotL = (dot(normalWS, lightDirectionWS) + wrap) / max(half(1.0) + wrap, half(0.0001));
+                return saturate(wrappedNdotL);
+            }
+
+            half3 EvaluateAdditionalLightContribution(Light light, half3 normalWS)
+            {
+                half ndotl = EvaluateWrappedDiffuse(normalWS, light.direction, saturate(_AdditionalLightsWrap));
+                return light.color * (ndotl * light.distanceAttenuation * light.shadowAttenuation * _AdditionalLightsStrength);
+            }
+
+            half3 EvaluateAdditionalVertexLights(float3 positionWS, half3 normalWS)
+            {
+                half3 lighting = half3(0.0, 0.0, 0.0);
+
+#if (defined(_ADDITIONAL_LIGHTS) || defined(_ADDITIONAL_LIGHTS_VERTEX)) && !USE_CLUSTER_LIGHT_LOOP
+                uint lightsCount = GetAdditionalLightsCount();
+                for (uint lightIndex = 0u; lightIndex < lightsCount; lightIndex++)
+                {
+                    Light light = GetAdditionalLight(lightIndex, positionWS);
+                    lighting += EvaluateAdditionalLightContribution(light, normalWS);
+                }
+#endif
+
+                return lighting;
+            }
+
+            InputData InitializeGrassInputData(float3 positionWS, float4 positionHCS, half3 normalWS)
+            {
+                InputData inputData = (InputData)0;
+                inputData.positionWS = positionWS;
+                inputData.positionCS = positionHCS;
+                inputData.normalWS = normalWS;
+                inputData.viewDirectionWS = GetWorldSpaceNormalizeViewDir(positionWS);
+                inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(positionHCS);
+                inputData.shadowMask = half4(1.0, 1.0, 1.0, 1.0);
+                return inputData;
+            }
+
+            half3 EvaluateAdditionalFragmentLights(InputData inputData, half3 normalWS)
+            {
+                half3 lighting = half3(0.0, 0.0, 0.0);
+
+#if defined(_ADDITIONAL_LIGHTS) && USE_CLUSTER_LIGHT_LOOP
+                uint pixelLightCount = GetAdditionalLightsCount();
+
+                [loop] for (uint lightIndex = 0u; lightIndex < min(URP_FP_DIRECTIONAL_LIGHTS_COUNT, MAX_VISIBLE_LIGHTS); lightIndex++)
+                {
+                    CLUSTER_LIGHT_LOOP_SUBTRACTIVE_LIGHT_CHECK
+                    Light light = GetAdditionalLight(lightIndex, inputData.positionWS);
+                    lighting += EvaluateAdditionalLightContribution(light, normalWS);
+                }
+
+                LIGHT_LOOP_BEGIN(pixelLightCount)
+                    Light light = GetAdditionalLight(lightIndex, inputData.positionWS);
+                    lighting += EvaluateAdditionalLightContribution(light, normalWS);
+                LIGHT_LOOP_END
+#endif
+
+                return lighting;
+            }
+
+            Varyings Vert(Attributes input)
+            {
+                GrassInstance instanceData = _GrassInstances[input.instanceID];
+
+                float3 origin = instanceData.positionScale.xyz;
+                float height = max(0.01, instanceData.positionScale.w);
+                float width = max(0.01, instanceData.colorWidth.w);
+                float3 terrainNormal = normalize(instanceData.normalYaw.xyz + float3(0.0001, 0.0001, 0.0001));
+
+                float yawSin;
+                float yawCos;
+                sincos(instanceData.normalYaw.w, yawSin, yawCos);
+
+                float3 yawForward = normalize(float3(yawSin, 0.0, yawCos));
+                float3 tangent = normalize(cross(terrainNormal, yawForward) + float3(0.0001, 0.0, 0.0001));
+                float3 bitangent = normalize(cross(tangent, terrainNormal));
+
+                float swayMask = saturate(input.uv.y);
+                float2 windPlanar = normalize(_Wind.xy + float2(0.0001, 0.0001));
+                float phase = dot(origin.xz, float2(0.071, 0.047)) + _Time.y * _Wind.w + instanceData.normalYaw.w;
+                float gust = sin(phase) * 0.65 + sin(phase * 2.17) * 0.35;
+                float3 windOffset = float3(windPlanar.x, 0.0, windPlanar.y) * gust * _Wind.z * swayMask * swayMask;
+
+                float3 localOffset =
+                    tangent * (input.positionOS.x * width) +
+                    bitangent * (input.positionOS.z * width) +
+                    terrainNormal * ((input.positionOS.y - _MeshGrounding.x) * height + _MeshGrounding.y);
+
+                float3 positionWS = origin + localOffset + windOffset;
+                float distanceToViewer = distance(_ViewerPosition.xz, positionWS.xz);
+                float fade = 1.0 - smoothstep(_FadeDistances.x, _FadeDistances.y, distanceToViewer);
+
+                Varyings output;
+                output.positionHCS = TransformWorldToHClip(positionWS);
+                output.uv = input.uv;
+                output.normalWS = half3(terrainNormal);
+                output.color = half3(instanceData.colorWidth.rgb);
+                output.fade = half(fade);
+                output.fogFactor = half(ComputeFogFactor(output.positionHCS.z));
+                output.positionWS = positionWS;
+#if (defined(_ADDITIONAL_LIGHTS) || defined(_ADDITIONAL_LIGHTS_VERTEX)) && !USE_CLUSTER_LIGHT_LOOP
+                output.vertexLighting = EvaluateAdditionalVertexLights(positionWS, output.normalWS);
+#endif
+                return output;
+            }
+
+            half4 Frag(Varyings input) : SV_Target
+            {
+                half centeredUv = abs(input.uv.x * 2.0 - 1.0);
+                half bladeWidth = lerp(1.0, 0.12, input.uv.y * input.uv.y);
+                half bladeMask = saturate((bladeWidth - centeredUv) * 8.0);
+                half4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv);
+                half textured = saturate(_UseBaseMap);
+                half alpha = lerp(bladeMask, baseMap.a, textured);
+                clip(alpha - _Cutoff);
+                clip(input.fade - DitherNoise(input.positionHCS.xy));
+
+                half3 normalWS = normalize(input.normalWS);
+                float4 shadowCoord = TransformWorldToShadowCoord(input.positionWS);
+                Light mainLight = GetMainLight(shadowCoord);
+                half3 ambient = SampleSH(normalWS);
+                half3 lighting = ambient * _AmbientStrength + EvaluateDirectLight(mainLight, normalWS, _ReceiveShadows);
+                half3 additionalLighting = half3(0.0, 0.0, 0.0);
+
+#if (defined(_ADDITIONAL_LIGHTS) || defined(_ADDITIONAL_LIGHTS_VERTEX)) && !USE_CLUSTER_LIGHT_LOOP
+                additionalLighting += input.vertexLighting;
+#endif
+
+#if defined(_ADDITIONAL_LIGHTS) && USE_CLUSTER_LIGHT_LOOP
+                InputData inputData = InitializeGrassInputData(input.positionWS, input.positionHCS, normalWS);
+                additionalLighting += EvaluateAdditionalFragmentLights(inputData, normalWS);
+#endif
+
+                half3 bladeGradient = lerp(_BaseColor.rgb, _TipColor.rgb, input.uv.y);
+                half3 albedo = bladeGradient * input.color * lerp(half3(1.0, 1.0, 1.0), baseMap.rgb, textured);
+                half3 additionalAlbedo = lerp(half3(1.0, 1.0, 1.0), albedo, saturate(_AdditionalLightsAlbedoInfluence));
+                half3 color = albedo * lighting + additionalAlbedo * additionalLighting;
+                color = MixFog(color, input.fogFactor);
+                return half4(color, 1.0);
+            }
+            ENDHLSL
+        }
+    }
+}

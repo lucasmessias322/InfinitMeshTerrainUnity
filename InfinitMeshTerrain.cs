@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Serialization;
 
 [DisallowMultipleComponent]
 public partial class InfinitMeshTerrain : MonoBehaviour
@@ -81,29 +80,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     [SerializeField, Min(0)] private int cachedChunkPadding = 2;
 
     [Header("Terrain Shape")]
-    [SerializeField, Min(1f)] private float heightMultiplier = 800f;
-    [SerializeField] private Vector2 noiseOffset = new Vector2(-50000f, 50000f);
-    [SerializeField] private int terrainSeed = 1337;
-    [SerializeField, Min(0.000001f)] private float continentFrequency = 0.00012f;
-    [SerializeField, Min(0.000001f)] private float domainWarpFrequency = 0.00035f;
-    [SerializeField, Min(0f)] private float domainWarpStrength = 300f;
-    [SerializeField, Min(0.000001f)] private float biomeFrequency = 0.0003f;
-    [SerializeField, Min(0.000001f)] private float ridgeFrequency = 0.00065f;
-    [SerializeField, Min(0.000001f)] private float detailFrequency = 0.0035f;
-    [SerializeField, Range(0f, 0.9f)] private float seaCoverage = 0.3f;
-    [SerializeField, Range(0f, 1f)] private float mountainStart = 0.58f;
-    [SerializeField, Min(0f)] private float plainsStrength = 0.2f;
-    [SerializeField, Min(0f)] private float hillsStrength = 0.18f;
-    [SerializeField, Min(0f)] private float mountainStrength = 0.28f;
-    [SerializeField, Min(0f)] private float cliffStrength = 0.06f;
-    [SerializeField, Min(0f)] private float detailStrength = 0.06f;
-    [SerializeField, Range(0f, 1f)] private float terraceStrength = 0.05f;
-    [SerializeField, Min(1)] private int terraceSteps = 7;
-    [SerializeField, Range(0f, 1f)] private float terrainSplineInfluence = 1f;
-    [SerializeField] private TerrainSplinesSO terrainSplines;
-    [FormerlySerializedAs("legacyNoiseInfluence")]
-    [SerializeField, Range(0f, 1f), InspectorName("Noise Layer Influence")] private float noiseLayerInfluence = 1f;
-    [SerializeField] private NoiseLayersSO noiseSettings;
+    [SerializeField] private TerrainShapeSettingsSO terrainShapeSettings;
 
     [Header("Water")]
     [SerializeField] private bool enableWater = true;
@@ -124,6 +101,9 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private Vector2Int lastViewerChunk;
     private Vector3 lastViewerUpdatePosition;
     private bool hasBuiltInitialSet;
+    private TerrainShapeSettingsSO subscribedTerrainShapeSettings;
+    private GrassSettingsSO subscribedGrassSettings;
+    private TreeSettingsSO subscribedTreeSettings;
 
     private void Awake()
     {
@@ -135,6 +115,9 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
     private void OnEnable()
     {
+        SyncTerrainShapeSettingsSubscription();
+        SyncGrassSettingsSubscription();
+        SyncTreeSettingsSubscription();
         ForceRefresh();
     }
 
@@ -163,12 +146,20 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         {
             RefreshVisibleChunks(viewerChunk);
         }
+
+        UpdateGrassDetails();
+        UpdateTreeDetails();
     }
 
     private void OnDisable()
     {
+        UnsubscribeTerrainShapeSettings();
+        UnsubscribeGrassSettings();
+        UnsubscribeTreeSettings();
         CompleteAndDisposeAllTasks();
         ClearRuntimeChunks();
+        DestroyGrassRuntimeResources();
+        DestroyTreeRuntimeResources();
         DestroyWaterInstance();
         hasBuiltInitialSet = false;
     }
@@ -184,19 +175,21 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         }
 
         lod0VertexMultiplier = Mathf.Clamp(lod0VertexMultiplier, 1, 4);
-        heightMultiplier = Mathf.Max(1f, heightMultiplier);
         maxConcurrentMeshTasks = Mathf.Max(1, maxConcurrentMeshTasks);
         cachedChunkPadding = Mathf.Max(0, cachedChunkPadding);
         maxLod = Mathf.Clamp(maxLod, 0, 5);
         colliderMaxLod = Mathf.Clamp(colliderMaxLod, 0, maxLod);
-        terraceSteps = Mathf.Max(1, terraceSteps);
-        terrainSplineInfluence = Mathf.Clamp01(terrainSplineInfluence);
-        noiseLayerInfluence = Mathf.Clamp01(noiseLayerInfluence);
         slopeRockChannel = (SplatChannel)Mathf.Clamp((int)slopeRockChannel, 0, MaxTerrainLayerCount - 1);
         slopeRockStartAngle = Mathf.Clamp(slopeRockStartAngle, 0f, 89.9f);
         slopeRockFullAngle = Mathf.Clamp(slopeRockFullAngle, slopeRockStartAngle + 0.01f, 90f);
         slopeRockStrength = Mathf.Clamp01(slopeRockStrength);
+        ValidateTerrainShapeSettings();
+        SyncTerrainShapeSettingsSubscription();
         ValidateTerrainLayers();
+        ValidateGrassSettings();
+        SyncGrassSettingsSubscription();
+        ValidateTreeSettings();
+        SyncTreeSettingsSubscription();
         ApplyChunkMaterialToRuntimeChunks();
         RequestVisibleChunkRebuilds();
     }
@@ -209,5 +202,79 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         }
 
         RefreshVisibleChunks(WorldToChunkCoord(viewer.position));
+    }
+
+    private void ValidateTerrainShapeSettings()
+    {
+        if (terrainShapeSettings != null)
+        {
+            terrainShapeSettings.ValidateValues();
+        }
+    }
+
+    private void SyncTerrainShapeSettingsSubscription()
+    {
+        if (subscribedTerrainShapeSettings == terrainShapeSettings)
+        {
+            return;
+        }
+
+        UnsubscribeTerrainShapeSettings();
+        subscribedTerrainShapeSettings = terrainShapeSettings;
+
+        if (subscribedTerrainShapeSettings != null)
+        {
+            subscribedTerrainShapeSettings.Changed += OnTerrainShapeSettingsChanged;
+        }
+    }
+
+    private void UnsubscribeTerrainShapeSettings()
+    {
+        if (subscribedTerrainShapeSettings == null)
+        {
+            return;
+        }
+
+        subscribedTerrainShapeSettings.Changed -= OnTerrainShapeSettingsChanged;
+        subscribedTerrainShapeSettings = null;
+    }
+
+    private void OnTerrainShapeSettingsChanged()
+    {
+        RequestVisibleChunkRebuilds();
+    }
+
+    private void SyncGrassSettingsSubscription()
+    {
+        if (subscribedGrassSettings == grassSettings)
+        {
+            return;
+        }
+
+        UnsubscribeGrassSettings();
+        subscribedGrassSettings = grassSettings;
+
+        if (subscribedGrassSettings != null)
+        {
+            subscribedGrassSettings.Changed += OnGrassSettingsChanged;
+        }
+    }
+
+    private void UnsubscribeGrassSettings()
+    {
+        if (subscribedGrassSettings == null)
+        {
+            return;
+        }
+
+        subscribedGrassSettings.Changed -= OnGrassSettingsChanged;
+        subscribedGrassSettings = null;
+    }
+
+    private void OnGrassSettingsChanged()
+    {
+        ValidateGrassSettings();
+        ClearGrassFromRuntimeChunks();
+        RequestVisibleChunkRebuilds();
     }
 }

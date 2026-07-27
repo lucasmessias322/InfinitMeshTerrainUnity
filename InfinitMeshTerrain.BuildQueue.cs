@@ -48,6 +48,8 @@ public partial class InfinitMeshTerrain
         int surfaceIndexCount = baseQuadCount * 6;
         int skirtIndexCount = skirtQuadCount * 6;
         int indexCount = surfaceIndexCount + skirtIndexCount;
+        int grassInstanceCapacity = ShouldBuildGrassForChunk(coord) ? CalculateGrassInstanceCapacity() : 0;
+        int grassTerrainLayerCount = grassInstanceCapacity > 0 ? GetGrassTerrainLayerCount() : 0;
 
         TerrainBuildTask task = new TerrainBuildTask(
             coord,
@@ -59,9 +61,12 @@ public partial class InfinitMeshTerrain
             skirtIndexCount,
             baseVertexCount,
             GetNoiseLayerCount(),
-            GetTerrainSplineSampleCount());
+            GetTerrainSplineSampleCount(),
+            grassInstanceCapacity,
+            grassTerrainLayerCount);
         CopyNoiseLayers(task.NoiseLayers);
         CopyTerrainSplineSamples(task.TerrainSplineSamples);
+        CopyGrassTerrainLayers(task.GrassTerrainLayers);
 
         TerrainSettings settings = CreateTerrainSettings();
 
@@ -75,7 +80,7 @@ public partial class InfinitMeshTerrain
             Settings = settings,
             ChunkOrigin = new float2(coord.x * chunkSize, coord.y * chunkSize),
             ChunkSize = chunkSize,
-            HeightMultiplier = heightMultiplier,
+            HeightMultiplier = GetTerrainHeightMultiplier(),
             SkirtDepth = skirtDepth,
             Resolution = resolution,
             BaseVertexCount = baseVertexCount,
@@ -96,7 +101,30 @@ public partial class InfinitMeshTerrain
 
         JobHandle verticesHandle = verticesJob.ScheduleParallel(vertexCount, 64, default);
         JobHandle indicesHandle = indicesJob.Schedule();
-        task.Handle = JobHandle.CombineDependencies(verticesHandle, indicesHandle);
+        JobHandle grassHandle = default;
+        if (task.HasGrassInstances)
+        {
+            GenerateGrassInstancesJob grassJob = new GenerateGrassInstancesJob
+            {
+                Vertices = task.Vertices,
+                Normals = task.Normals,
+                TerrainLayers = task.GrassTerrainLayers,
+                GrassInstances = task.GrassInstances,
+                GrassInstanceCounter = task.GrassInstanceCounter,
+                GrassBounds = task.GrassBounds,
+                Settings = CreateGrassBuildSettings(),
+                SlopeTextureSettings = CreateSlopeTextureSettings(),
+                ChunkCoord = new int2(coord.x, coord.y),
+                ChunkOrigin = new float2(coord.x * chunkSize, coord.y * chunkSize),
+                ChunkSize = chunkSize,
+                Resolution = resolution,
+                BaseVertexCount = baseVertexCount
+            };
+
+            grassHandle = grassJob.Schedule(verticesHandle);
+        }
+
+        task.Handle = JobHandle.CombineDependencies(verticesHandle, indicesHandle, grassHandle);
         return task;
     }
 
@@ -130,7 +158,23 @@ public partial class InfinitMeshTerrain
 
             if (canApply)
             {
-                chunk.Apply(task, chunkMaterial, useCollider, colliderMaxLod, terrainLayers, CreateSlopeTextureSettings());
+                TreeSettingsSO currentTreeSettings = treeSettings;
+                IReadOnlyList<TreeRenderPrototype> currentTreeRenderPrototypes = GetTreeRenderPrototypes(currentTreeSettings);
+                chunk.Apply(
+                    task,
+                    chunkMaterial,
+                    useCollider,
+                    colliderMaxLod,
+                    terrainLayers,
+                    CreateSlopeTextureSettings(),
+                    currentTreeSettings,
+                    currentTreeRenderPrototypes,
+                    GetTreeTotalDensity(),
+                    ShouldBuildTreesForChunk(coord),
+                    GetTerrainSeed(),
+                    chunkSize,
+                    enableWater,
+                    waterHeight);
             }
             else if (chunks.ContainsKey(coord) && visibleChunkCoords.Contains(coord))
             {
