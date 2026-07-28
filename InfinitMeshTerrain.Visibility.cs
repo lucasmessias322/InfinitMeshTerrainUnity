@@ -82,6 +82,7 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
+            ReleaseInteractiveTreesForChunk(coord, true);
             chunk.Dispose();
             chunks.Remove(coord);
             queuedChunks.Remove(coord);

@@ -14,6 +14,10 @@ public sealed class TreeSettingsSO : ScriptableObject
     public const int DefaultMaxInstancesPerCell = 2;
     public const float DefaultJitter = 0.85f;
     public const int DefaultSeedOffset = 27183;
+    public const float DefaultInteractiveDistance = 96f;
+    public const float DefaultInteractiveReleaseDistance = 128f;
+    public const int DefaultMaxInteractiveInstances = 96;
+    public const int DefaultMaxInteractiveSpawnsPerFrame = 8;
 
     public event Action Changed;
 
@@ -23,6 +27,14 @@ public sealed class TreeSettingsSO : ScriptableObject
     [SerializeField] private bool unloadOutsideTreeDistance = true;
     [SerializeField] private ShadowCastingMode shadowCastingMode = ShadowCastingMode.On;
     [SerializeField] private bool receiveShadows = true;
+
+    [Header("Interaction Streaming")]
+    [SerializeField] private bool enableInteractiveTrees = true;
+    [SerializeField, Min(0f)] private float interactiveDistance = DefaultInteractiveDistance;
+    [SerializeField, Min(0f)] private float interactiveReleaseDistance = DefaultInteractiveReleaseDistance;
+    [SerializeField, Min(0)] private int maxInteractiveInstances = DefaultMaxInteractiveInstances;
+    [SerializeField, Min(1)] private int maxInteractiveSpawnsPerFrame = DefaultMaxInteractiveSpawnsPerFrame;
+    [SerializeField] private bool hideInstancedTreesWhenInteractive = true;
 
     [Header("Distribution")]
     [SerializeField, Min(0.1f)] private float cellSize = DefaultCellSize;
@@ -39,6 +51,12 @@ public sealed class TreeSettingsSO : ScriptableObject
     public bool UnloadOutsideTreeDistance => unloadOutsideTreeDistance;
     public ShadowCastingMode ShadowCastingMode => shadowCastingMode;
     public bool ReceiveShadows => receiveShadows;
+    public bool EnableInteractiveTrees => enableInteractiveTrees;
+    public float InteractiveDistance => Mathf.Max(0f, interactiveDistance);
+    public float InteractiveReleaseDistance => Mathf.Max(InteractiveDistance, interactiveReleaseDistance);
+    public int MaxInteractiveInstances => Mathf.Max(0, maxInteractiveInstances);
+    public int MaxInteractiveSpawnsPerFrame => Mathf.Max(1, maxInteractiveSpawnsPerFrame);
+    public bool HideInstancedTreesWhenInteractive => hideInstancedTreesWhenInteractive;
     public float CellSize => Mathf.Max(0.1f, cellSize);
     public int MaxInstancesPerChunk => Mathf.Max(0, maxInstancesPerChunk);
     public int MaxInstancesPerCell => Mathf.Clamp(maxInstancesPerCell, 1, 8);
@@ -70,6 +88,10 @@ public sealed class TreeSettingsSO : ScriptableObject
     public void ValidateValues()
     {
         treeDistance = Mathf.Max(1f, treeDistance);
+        interactiveDistance = Mathf.Max(0f, interactiveDistance);
+        interactiveReleaseDistance = Mathf.Max(interactiveDistance, interactiveReleaseDistance);
+        maxInteractiveInstances = Mathf.Max(0, maxInteractiveInstances);
+        maxInteractiveSpawnsPerFrame = Mathf.Max(1, maxInteractiveSpawnsPerFrame);
         cellSize = Mathf.Max(0.1f, cellSize);
         maxInstancesPerChunk = Mathf.Max(0, maxInstancesPerChunk);
         maxInstancesPerCell = Mathf.Clamp(maxInstancesPerCell, 1, 8);
@@ -100,6 +122,16 @@ public sealed class TreePrototypeSettings
     [SerializeField] private GameObject prefab;
     [SerializeField, Min(0f), InspectorName("Density Per Hectare")] private float densityPerHectare = 4f;
 
+    [Header("Interaction")]
+    [SerializeField] private GameObject interactivePrefab;
+    [SerializeField] private GameObject felledPrefab;
+    [SerializeField] private GameObject stumpPrefab;
+    [SerializeField] private GameObject resourceDropPrefab;
+    [SerializeField, Min(0.01f)] private float maxHealth = 30f;
+    [SerializeField, Min(0)] private int minResourceDrops = 1;
+    [SerializeField, Min(0)] private int maxResourceDrops = 3;
+    [SerializeField, Min(0f)] private float resourceDropScatterRadius = 1.25f;
+
     [Header("Placement")]
     [SerializeField] private bool useTerrainLayer = true;
     [SerializeField] private InfinitMeshTerrain.SplatChannel channel = InfinitMeshTerrain.SplatChannel.Map0G;
@@ -129,6 +161,14 @@ public sealed class TreePrototypeSettings
     [SerializeField, Min(0.001f)] private float forestBlendRange = 0.22f;
 
     public GameObject Prefab => prefab;
+    public GameObject InteractionPrefab => interactivePrefab != null ? interactivePrefab : prefab;
+    public GameObject FelledPrefab => felledPrefab;
+    public GameObject StumpPrefab => stumpPrefab;
+    public GameObject ResourceDropPrefab => resourceDropPrefab;
+    public float MaxHealth => Mathf.Max(0.01f, maxHealth);
+    public int MinResourceDrops => Mathf.Max(0, minResourceDrops);
+    public int MaxResourceDrops => Mathf.Max(MinResourceDrops, maxResourceDrops);
+    public float ResourceDropScatterRadius => Mathf.Max(0f, resourceDropScatterRadius);
     public float DensityPerSquareMeter => Mathf.Max(0f, densityPerHectare) * 0.0001f;
     public bool UseTerrainLayer => useTerrainLayer;
     public int ChannelIndex => Mathf.Clamp((int)channel, 0, 7);
@@ -157,6 +197,10 @@ public sealed class TreePrototypeSettings
     public void ValidateValues()
     {
         densityPerHectare = Mathf.Max(0f, densityPerHectare);
+        maxHealth = Mathf.Max(0.01f, maxHealth);
+        minResourceDrops = Mathf.Max(0, minResourceDrops);
+        maxResourceDrops = Mathf.Max(minResourceDrops, maxResourceDrops);
+        resourceDropScatterRadius = Mathf.Max(0f, resourceDropScatterRadius);
         layerThreshold = Mathf.Clamp01(layerThreshold);
         waterPadding = Mathf.Max(0f, waterPadding);
         minHeight = Mathf.Max(0f, minHeight);

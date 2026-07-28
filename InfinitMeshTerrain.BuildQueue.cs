@@ -200,6 +200,8 @@ public partial class InfinitMeshTerrain
 
     private void ClearRuntimeChunks()
     {
+        ReleaseAllInteractiveTrees(true);
+
         foreach (TerrainChunk chunk in chunks.Values)
         {
             chunk.Dispose();

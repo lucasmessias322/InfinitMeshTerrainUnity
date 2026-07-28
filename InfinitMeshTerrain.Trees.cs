@@ -5,15 +5,24 @@ using UnityEngine.Rendering;
 
 public partial class InfinitMeshTerrain
 {
+    private const int TreeDrawBatchSize = 1023;
     private static readonly TreeRenderPrototype[] EmptyTreeRenderPrototypes = Array.Empty<TreeRenderPrototype>();
 
     [Header("Trees")]
     [SerializeField] private TreeSettingsSO treeSettings;
 
     private readonly List<TreeRenderPrototype> treeRenderPrototypes = new List<TreeRenderPrototype>();
+    private readonly HashSet<ulong> removedTreeIds = new HashSet<ulong>();
+    private readonly Dictionary<ulong, ActiveInteractiveTree> activeInteractiveTrees = new Dictionary<ulong, ActiveInteractiveTree>();
+    private readonly Dictionary<GameObject, Stack<GameObject>> interactiveTreePools = new Dictionary<GameObject, Stack<GameObject>>();
+    private readonly List<TreeInteractionCandidate> treeInteractionCandidates = new List<TreeInteractionCandidate>();
+    private readonly List<ulong> activeInteractiveTreeRemovalBuffer = new List<ulong>();
+    private readonly List<GameObject> pooledTreeDestroyBuffer = new List<GameObject>();
+    private readonly Matrix4x4[] treeDrawScratch = new Matrix4x4[TreeDrawBatchSize];
     private TreeSettingsSO cachedTreeRenderSettings;
     private bool treeRenderCacheDirty = true;
     private float cachedTreeTotalDensity;
+    private Transform interactiveTreeRoot;
 
     private void ValidateTreeSettings()
     {
@@ -31,13 +40,19 @@ public partial class InfinitMeshTerrain
         IReadOnlyList<TreeRenderPrototype> renderPrototypes = GetTreeRenderPrototypes(settings);
         if (settings == null || !settings.EnableTrees || renderPrototypes.Count == 0 || viewer == null)
         {
+            ReleaseAllInteractiveTrees(false);
             ClearTreesFromRuntimeChunks();
             return;
         }
 
+        UpdateInteractiveTrees(settings);
+
         int layer = gameObject.layer;
         ShadowCastingMode shadowCastingMode = settings.ShadowCastingMode;
         bool receiveShadows = settings.ReceiveShadows;
+        Dictionary<ulong, ActiveInteractiveTree> hiddenInteractiveTrees = settings.HideInstancedTreesWhenInteractive
+            ? activeInteractiveTrees
+            : null;
 
         foreach (Vector2Int coord in visibleChunkCoords)
         {
@@ -62,7 +77,7 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            chunk.DrawTrees(layer, shadowCastingMode, receiveShadows);
+            chunk.DrawTrees(layer, shadowCastingMode, receiveShadows, removedTreeIds, hiddenInteractiveTrees, treeDrawScratch);
         }
     }
 
@@ -110,11 +125,474 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            treeRenderPrototypes.Add(new TreeRenderPrototype(prototype, renderItems));
+            treeRenderPrototypes.Add(new TreeRenderPrototype(prototype, i, renderItems));
             cachedTreeTotalDensity += prototype.DensityPerSquareMeter;
         }
 
         return treeRenderPrototypes;
+    }
+
+    public bool IsProceduralTreeRemoved(ulong treeId)
+    {
+        return removedTreeIds.Contains(treeId);
+    }
+
+    public ulong[] GetRemovedProceduralTreeIds()
+    {
+        ulong[] ids = new ulong[removedTreeIds.Count];
+        removedTreeIds.CopyTo(ids);
+        return ids;
+    }
+
+    public void SetRemovedProceduralTreeIds(IEnumerable<ulong> treeIds)
+    {
+        removedTreeIds.Clear();
+
+        if (treeIds != null)
+        {
+            foreach (ulong treeId in treeIds)
+            {
+                removedTreeIds.Add(treeId);
+            }
+        }
+
+        ReleaseRemovedInteractiveTrees();
+    }
+
+    public bool SetProceduralTreeRemoved(ulong treeId, bool removed)
+    {
+        bool changed = removed ? removedTreeIds.Add(treeId) : removedTreeIds.Remove(treeId);
+        if (removed)
+        {
+            ReleaseInteractiveTree(treeId, false);
+        }
+
+        return changed;
+    }
+
+    public bool TryDamageProceduralTree(ulong treeId, float damage, Vector3 hitPoint, Vector3 impulse)
+    {
+        if (!activeInteractiveTrees.TryGetValue(treeId, out ActiveInteractiveTree activeTree)
+            || activeTree.Component == null)
+        {
+            return false;
+        }
+
+        activeTree.Component.ApplyDamage(damage, hitPoint, impulse);
+        return true;
+    }
+
+    internal void NotifyProceduralTreeDestroyed(ProceduralTreeInstance tree, Vector3 hitPoint, Vector3 impulse)
+    {
+        if (tree == null)
+        {
+            return;
+        }
+
+        if (!activeInteractiveTrees.TryGetValue(tree.TreeId, out ActiveInteractiveTree activeTree))
+        {
+            removedTreeIds.Add(tree.TreeId);
+            return;
+        }
+
+        removedTreeIds.Add(tree.TreeId);
+        SpawnTreeAftermath(activeTree, hitPoint, impulse);
+        ReleaseInteractiveTree(tree.TreeId, false);
+    }
+
+    private void UpdateInteractiveTrees(TreeSettingsSO settings)
+    {
+        if (settings == null
+            || !settings.EnableInteractiveTrees
+            || settings.MaxInteractiveInstances <= 0
+            || settings.InteractiveDistance <= 0f
+            || viewer == null)
+        {
+            ReleaseAllInteractiveTrees(false);
+            return;
+        }
+
+        EnsureInteractiveTreeRoot();
+        Vector3 viewerPosition = viewer.position;
+        float releaseDistance = settings.InteractiveReleaseDistance;
+        float releaseDistanceSqr = releaseDistance * releaseDistance;
+        activeInteractiveTreeRemovalBuffer.Clear();
+
+        foreach (KeyValuePair<ulong, ActiveInteractiveTree> pair in activeInteractiveTrees)
+        {
+            ActiveInteractiveTree activeTree = pair.Value;
+            bool shouldRelease = activeTree == null
+                || activeTree.Instance == null
+                || removedTreeIds.Contains(pair.Key)
+                || !visibleChunkCoords.Contains(activeTree.Coord)
+                || !chunks.TryGetValue(activeTree.Coord, out TerrainChunk chunk)
+                || !chunk.HasTreeInstance(pair.Key)
+                || (activeTree.Instance.transform.position - viewerPosition).sqrMagnitude > releaseDistanceSqr;
+
+            if (shouldRelease)
+            {
+                activeInteractiveTreeRemovalBuffer.Add(pair.Key);
+            }
+        }
+
+        for (int i = 0; i < activeInteractiveTreeRemovalBuffer.Count; i++)
+        {
+            ReleaseInteractiveTree(activeInteractiveTreeRemovalBuffer[i], false);
+        }
+
+        TrimInteractiveTreeBudget(settings.MaxInteractiveInstances, viewerPosition);
+        if (activeInteractiveTrees.Count >= settings.MaxInteractiveInstances)
+        {
+            return;
+        }
+
+        float interactiveDistance = settings.InteractiveDistance;
+        float interactiveDistanceSqr = interactiveDistance * interactiveDistance;
+        treeInteractionCandidates.Clear();
+
+        foreach (Vector2Int coord in visibleChunkCoords)
+        {
+            if (!chunks.TryGetValue(coord, out TerrainChunk chunk) || !chunk.HasTreeBuild)
+            {
+                continue;
+            }
+
+            IReadOnlyList<TreeInstanceData> instances = chunk.TreeInstances;
+            for (int i = 0; i < instances.Count; i++)
+            {
+                TreeInstanceData instance = instances[i];
+                if (removedTreeIds.Contains(instance.Id)
+                    || activeInteractiveTrees.ContainsKey(instance.Id)
+                    || instance.PrototypeSettings == null
+                    || instance.PrototypeSettings.InteractionPrefab == null)
+                {
+                    continue;
+                }
+
+                float distanceSqr = (instance.Position - viewerPosition).sqrMagnitude;
+                if (distanceSqr <= interactiveDistanceSqr)
+                {
+                    treeInteractionCandidates.Add(new TreeInteractionCandidate(instance, distanceSqr));
+                }
+            }
+        }
+
+        treeInteractionCandidates.Sort((a, b) => a.DistanceSqr.CompareTo(b.DistanceSqr));
+
+        int spawnBudget = Mathf.Min(
+            settings.MaxInteractiveSpawnsPerFrame,
+            settings.MaxInteractiveInstances - activeInteractiveTrees.Count);
+
+        for (int i = 0; i < treeInteractionCandidates.Count && spawnBudget > 0; i++)
+        {
+            if (TrySpawnInteractiveTree(treeInteractionCandidates[i].Instance))
+            {
+                spawnBudget--;
+            }
+        }
+    }
+
+    private void TrimInteractiveTreeBudget(int maxInteractiveInstances, Vector3 viewerPosition)
+    {
+        while (activeInteractiveTrees.Count > maxInteractiveInstances)
+        {
+            ulong farthestId = 0UL;
+            float farthestDistanceSqr = float.MinValue;
+
+            foreach (KeyValuePair<ulong, ActiveInteractiveTree> pair in activeInteractiveTrees)
+            {
+                ActiveInteractiveTree activeTree = pair.Value;
+                if (activeTree == null || activeTree.Instance == null)
+                {
+                    farthestId = pair.Key;
+                    farthestDistanceSqr = float.MaxValue;
+                    break;
+                }
+
+                float distanceSqr = (activeTree.Instance.transform.position - viewerPosition).sqrMagnitude;
+                if (distanceSqr > farthestDistanceSqr)
+                {
+                    farthestDistanceSqr = distanceSqr;
+                    farthestId = pair.Key;
+                }
+            }
+
+            if (farthestDistanceSqr == float.MinValue)
+            {
+                break;
+            }
+
+            ReleaseInteractiveTree(farthestId, false);
+        }
+    }
+
+    private bool TrySpawnInteractiveTree(TreeInstanceData data)
+    {
+        TreePrototypeSettings prototypeSettings = data.PrototypeSettings;
+        GameObject prefab = prototypeSettings != null ? prototypeSettings.InteractionPrefab : null;
+        if (prefab == null || activeInteractiveTrees.ContainsKey(data.Id))
+        {
+            return false;
+        }
+
+        GameObject instance = RentInteractiveTree(prefab);
+        if (instance == null)
+        {
+            return false;
+        }
+
+        Transform instanceTransform = instance.transform;
+        instanceTransform.SetParent(interactiveTreeRoot, true);
+        instanceTransform.SetPositionAndRotation(data.Position, data.Rotation);
+        instanceTransform.localScale = data.Scale;
+        instance.SetActive(true);
+
+        ProceduralTreeInstance treeInstance = instance.GetComponent<ProceduralTreeInstance>();
+        if (treeInstance == null)
+        {
+            treeInstance = instance.AddComponent<ProceduralTreeInstance>();
+        }
+
+        treeInstance.Initialize(
+            this,
+            data.Id,
+            data.Coord,
+            data.PrototypeIndex,
+            prototypeSettings.MaxHealth);
+
+        activeInteractiveTrees.Add(data.Id, new ActiveInteractiveTree(data, prefab, instance, treeInstance));
+        return true;
+    }
+
+    private GameObject RentInteractiveTree(GameObject prefab)
+    {
+        if (prefab == null)
+        {
+            return null;
+        }
+
+        if (interactiveTreePools.TryGetValue(prefab, out Stack<GameObject> pool))
+        {
+            while (pool.Count > 0)
+            {
+                GameObject pooled = pool.Pop();
+                if (pooled != null)
+                {
+                    return pooled;
+                }
+            }
+        }
+
+        return Instantiate(prefab);
+    }
+
+    private void ReleaseInteractiveTree(ulong treeId, bool destroyInstance)
+    {
+        if (!activeInteractiveTrees.TryGetValue(treeId, out ActiveInteractiveTree activeTree))
+        {
+            return;
+        }
+
+        activeInteractiveTrees.Remove(treeId);
+
+        if (activeTree == null || activeTree.Instance == null)
+        {
+            return;
+        }
+
+        if (destroyInstance)
+        {
+            DestroyRuntimeObject(activeTree.Instance);
+            return;
+        }
+
+        activeTree.Component?.ResetRuntimeState();
+        activeTree.Instance.SetActive(false);
+        if (interactiveTreeRoot != null)
+        {
+            activeTree.Instance.transform.SetParent(interactiveTreeRoot, true);
+        }
+
+        if (!interactiveTreePools.TryGetValue(activeTree.Prefab, out Stack<GameObject> pool))
+        {
+            pool = new Stack<GameObject>();
+            interactiveTreePools.Add(activeTree.Prefab, pool);
+        }
+
+        pool.Push(activeTree.Instance);
+    }
+
+    private void ReleaseRemovedInteractiveTrees()
+    {
+        activeInteractiveTreeRemovalBuffer.Clear();
+        foreach (ulong treeId in activeInteractiveTrees.Keys)
+        {
+            if (removedTreeIds.Contains(treeId))
+            {
+                activeInteractiveTreeRemovalBuffer.Add(treeId);
+            }
+        }
+
+        for (int i = 0; i < activeInteractiveTreeRemovalBuffer.Count; i++)
+        {
+            ReleaseInteractiveTree(activeInteractiveTreeRemovalBuffer[i], false);
+        }
+    }
+
+    private void ReleaseInteractiveTreesForChunk(Vector2Int coord, bool destroyInstances)
+    {
+        activeInteractiveTreeRemovalBuffer.Clear();
+        foreach (KeyValuePair<ulong, ActiveInteractiveTree> pair in activeInteractiveTrees)
+        {
+            if (pair.Value != null && pair.Value.Coord == coord)
+            {
+                activeInteractiveTreeRemovalBuffer.Add(pair.Key);
+            }
+        }
+
+        for (int i = 0; i < activeInteractiveTreeRemovalBuffer.Count; i++)
+        {
+            ReleaseInteractiveTree(activeInteractiveTreeRemovalBuffer[i], destroyInstances);
+        }
+    }
+
+    private void ReleaseAllInteractiveTrees(bool destroyInstances)
+    {
+        activeInteractiveTreeRemovalBuffer.Clear();
+        foreach (ulong treeId in activeInteractiveTrees.Keys)
+        {
+            activeInteractiveTreeRemovalBuffer.Add(treeId);
+        }
+
+        for (int i = 0; i < activeInteractiveTreeRemovalBuffer.Count; i++)
+        {
+            ReleaseInteractiveTree(activeInteractiveTreeRemovalBuffer[i], destroyInstances);
+        }
+
+        if (!destroyInstances)
+        {
+            return;
+        }
+
+        pooledTreeDestroyBuffer.Clear();
+        foreach (Stack<GameObject> pool in interactiveTreePools.Values)
+        {
+            while (pool.Count > 0)
+            {
+                GameObject instance = pool.Pop();
+                if (instance != null)
+                {
+                    pooledTreeDestroyBuffer.Add(instance);
+                }
+            }
+        }
+
+        interactiveTreePools.Clear();
+        for (int i = 0; i < pooledTreeDestroyBuffer.Count; i++)
+        {
+            DestroyRuntimeObject(pooledTreeDestroyBuffer[i]);
+        }
+
+        pooledTreeDestroyBuffer.Clear();
+
+        if (interactiveTreeRoot != null)
+        {
+            DestroyRuntimeObject(interactiveTreeRoot.gameObject);
+            interactiveTreeRoot = null;
+        }
+    }
+
+    private void EnsureInteractiveTreeRoot()
+    {
+        if (interactiveTreeRoot != null)
+        {
+            return;
+        }
+
+        GameObject root = new GameObject("Interactive Tree Runtime");
+        root.transform.SetParent(transform, false);
+        interactiveTreeRoot = root.transform;
+    }
+
+    private void SpawnTreeAftermath(ActiveInteractiveTree activeTree, Vector3 hitPoint, Vector3 impulse)
+    {
+        TreePrototypeSettings prototypeSettings = activeTree.Data.PrototypeSettings;
+        if (prototypeSettings == null)
+        {
+            return;
+        }
+
+        TreeInstanceData data = activeTree.Data;
+        SpawnConfiguredTreePrefab(prototypeSettings.StumpPrefab, data.Position, data.Rotation, data.Scale, Vector3.zero, Vector3.zero);
+
+        Vector3 fallImpulse = impulse.sqrMagnitude > 0.0001f
+            ? impulse
+            : data.Rotation * Vector3.forward * 2.5f;
+        SpawnConfiguredTreePrefab(prototypeSettings.FelledPrefab, data.Position, data.Rotation, data.Scale, hitPoint, fallImpulse);
+        SpawnResourceDrops(prototypeSettings, data, fallImpulse);
+    }
+
+    private void SpawnConfiguredTreePrefab(
+        GameObject prefab,
+        Vector3 position,
+        Quaternion rotation,
+        Vector3 scale,
+        Vector3 hitPoint,
+        Vector3 impulse)
+    {
+        if (prefab == null)
+        {
+            return;
+        }
+
+        GameObject instance = Instantiate(prefab, position, rotation);
+        instance.transform.localScale = scale;
+
+        if (interactiveTreeRoot != null)
+        {
+            instance.transform.SetParent(interactiveTreeRoot, true);
+        }
+
+        Rigidbody body = instance.GetComponent<Rigidbody>();
+        if (body != null && impulse.sqrMagnitude > 0.0001f)
+        {
+            Vector3 forcePoint = hitPoint.sqrMagnitude > 0.0001f ? hitPoint : position + Vector3.up;
+            body.AddForceAtPosition(impulse, forcePoint, ForceMode.Impulse);
+        }
+    }
+
+    private void SpawnResourceDrops(TreePrototypeSettings prototypeSettings, TreeInstanceData data, Vector3 impulse)
+    {
+        GameObject prefab = prototypeSettings.ResourceDropPrefab;
+        if (prefab == null || prototypeSettings.MaxResourceDrops <= 0)
+        {
+            return;
+        }
+
+        int dropRange = prototypeSettings.MaxResourceDrops - prototypeSettings.MinResourceDrops + 1;
+        int dropCount = prototypeSettings.MinResourceDrops + Mathf.FloorToInt(HashTree01(data.Id, 0x31415926u) * dropRange);
+        dropCount = Mathf.Clamp(dropCount, prototypeSettings.MinResourceDrops, prototypeSettings.MaxResourceDrops);
+        float scatterRadius = prototypeSettings.ResourceDropScatterRadius;
+
+        for (int i = 0; i < dropCount; i++)
+        {
+            float angle = HashTree01(data.Id, (uint)(0x9e3779b9u + i * 97u)) * Mathf.PI * 2f;
+            float radius = scatterRadius * Mathf.Sqrt(HashTree01(data.Id, (uint)(0x7f4a7c15u + i * 131u)));
+            Vector3 offset = new Vector3(Mathf.Cos(angle) * radius, 0.65f, Mathf.Sin(angle) * radius);
+            GameObject drop = Instantiate(prefab, data.Position + offset, Quaternion.identity);
+
+            Rigidbody body = drop.GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                Vector3 scatterImpulse = offset.normalized * 0.8f + Vector3.up * 1.2f;
+                if (impulse.sqrMagnitude > 0.0001f)
+                {
+                    scatterImpulse += impulse.normalized * 0.6f;
+                }
+
+                body.AddForce(scatterImpulse, ForceMode.Impulse);
+            }
+        }
     }
 
     private static TreeRenderItem[] CollectTreeRenderItems(GameObject prefab)
@@ -193,6 +671,7 @@ public partial class InfinitMeshTerrain
 
     private void ClearTreesFromRuntimeChunks()
     {
+        ReleaseAllInteractiveTrees(false);
         foreach (TerrainChunk chunk in chunks.Values)
         {
             chunk.ClearTrees();
@@ -201,6 +680,7 @@ public partial class InfinitMeshTerrain
 
     private void DestroyTreeRuntimeResources()
     {
+        ReleaseAllInteractiveTrees(true);
         ClearTreesFromRuntimeChunks();
         treeRenderPrototypes.Clear();
         cachedTreeRenderSettings = null;
@@ -240,21 +720,122 @@ public partial class InfinitMeshTerrain
     {
         ValidateTreeSettings();
         treeRenderCacheDirty = true;
+        ReleaseAllInteractiveTrees(true);
         ClearTreesFromRuntimeChunks();
         RequestVisibleChunkRebuilds();
     }
 
+    private static void DestroyRuntimeObject(UnityEngine.Object target)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        if (Application.isPlaying)
+        {
+            Destroy(target);
+        }
+        else
+        {
+            DestroyImmediate(target);
+        }
+    }
+
+    private static float HashTree01(ulong treeId, uint salt)
+    {
+        unchecked
+        {
+            uint low = (uint)treeId;
+            uint high = (uint)(treeId >> 32);
+            uint value = low ^ (high * 0x9e3779b9u) ^ salt;
+            value ^= value >> 16;
+            value *= 0x7feb352du;
+            value ^= value >> 15;
+            value *= 0x846ca68bu;
+            value ^= value >> 16;
+            return (value >> 8) * (1f / 16777216f);
+        }
+    }
+
     private sealed class TreeRenderPrototype
     {
-        public TreeRenderPrototype(TreePrototypeSettings settings, TreeRenderItem[] renderItems)
+        public TreeRenderPrototype(TreePrototypeSettings settings, int prototypeIndex, TreeRenderItem[] renderItems)
         {
             Settings = settings;
+            PrototypeIndex = prototypeIndex;
             RenderItems = renderItems;
         }
 
         public TreePrototypeSettings Settings { get; }
+        public int PrototypeIndex { get; }
         public TreeRenderItem[] RenderItems { get; }
         public float DensityPerSquareMeter => Settings.DensityPerSquareMeter;
+    }
+
+    private readonly struct TreeInstanceData
+    {
+        public TreeInstanceData(
+            ulong id,
+            Vector2Int coord,
+            int prototypeIndex,
+            TreePrototypeSettings prototypeSettings,
+            Vector3 position,
+            Quaternion rotation,
+            Vector3 scale,
+            Vector3 normal)
+        {
+            Id = id;
+            Coord = coord;
+            PrototypeIndex = prototypeIndex;
+            PrototypeSettings = prototypeSettings;
+            Position = position;
+            Rotation = rotation;
+            Scale = scale;
+            Normal = normal;
+        }
+
+        public ulong Id { get; }
+        public Vector2Int Coord { get; }
+        public int PrototypeIndex { get; }
+        public TreePrototypeSettings PrototypeSettings { get; }
+        public Vector3 Position { get; }
+        public Quaternion Rotation { get; }
+        public Vector3 Scale { get; }
+        public Vector3 Normal { get; }
+    }
+
+    private readonly struct TreeInteractionCandidate
+    {
+        public TreeInteractionCandidate(TreeInstanceData instance, float distanceSqr)
+        {
+            Instance = instance;
+            DistanceSqr = distanceSqr;
+        }
+
+        public TreeInstanceData Instance { get; }
+        public float DistanceSqr { get; }
+    }
+
+    private sealed class ActiveInteractiveTree
+    {
+        public ActiveInteractiveTree(
+            TreeInstanceData data,
+            GameObject prefab,
+            GameObject instance,
+            ProceduralTreeInstance component)
+        {
+            Data = data;
+            Prefab = prefab;
+            Instance = instance;
+            Component = component;
+        }
+
+        public TreeInstanceData Data { get; }
+        public GameObject Prefab { get; }
+        public GameObject Instance { get; }
+        public ProceduralTreeInstance Component { get; }
+        public Vector2Int Coord => Data.Coord;
     }
 
     private readonly struct TreeRenderItem
@@ -275,12 +856,12 @@ public partial class InfinitMeshTerrain
 
     private sealed partial class TerrainChunk
     {
-        private const int TreeDrawBatchSize = 1023;
-
         private readonly List<TreeRenderBatch> treeBatches = new List<TreeRenderBatch>();
+        private readonly List<TreeInstanceData> treeInstances = new List<TreeInstanceData>();
         private bool treesBuilt;
 
         public bool HasTreeBuild => treesBuilt;
+        public IReadOnlyList<TreeInstanceData> TreeInstances => treeInstances;
 
         public void ApplyTrees(
             TerrainBuildTask task,
@@ -372,7 +953,14 @@ public partial class InfinitMeshTerrain
                             continue;
                         }
 
-                        AddTreeRenderInstance(prototype, position, normal, chunkLocalToWorld, instanceHash);
+                        ulong treeId = CreateTreeInstanceId(
+                            Coord,
+                            x,
+                            z,
+                            candidate,
+                            prototype.PrototypeIndex,
+                            instanceHash);
+                        AddTreeRenderInstance(treeId, prototype, position, normal, chunkLocalToWorld, instanceHash);
                         spawnedCount++;
                     }
                 }
@@ -384,6 +972,7 @@ public partial class InfinitMeshTerrain
         public void ClearTrees()
         {
             treesBuilt = false;
+            treeInstances.Clear();
             for (int i = 0; i < treeBatches.Count; i++)
             {
                 treeBatches[i].Clear();
@@ -392,7 +981,26 @@ public partial class InfinitMeshTerrain
             treeBatches.Clear();
         }
 
-        public void DrawTrees(int layer, ShadowCastingMode shadowCastingMode, bool receiveShadows)
+        public bool HasTreeInstance(ulong treeId)
+        {
+            for (int i = 0; i < treeInstances.Count; i++)
+            {
+                if (treeInstances[i].Id == treeId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public void DrawTrees(
+            int layer,
+            ShadowCastingMode shadowCastingMode,
+            bool receiveShadows,
+            HashSet<ulong> removedTreeIds,
+            Dictionary<ulong, ActiveInteractiveTree> hiddenInteractiveTrees,
+            Matrix4x4[] scratchMatrices)
         {
             if (!treesBuilt)
             {
@@ -401,11 +1009,18 @@ public partial class InfinitMeshTerrain
 
             for (int i = 0; i < treeBatches.Count; i++)
             {
-                treeBatches[i].Draw(layer, shadowCastingMode, receiveShadows);
+                treeBatches[i].Draw(
+                    layer,
+                    shadowCastingMode,
+                    receiveShadows,
+                    removedTreeIds,
+                    hiddenInteractiveTrees,
+                    scratchMatrices);
             }
         }
 
         private void AddTreeRenderInstance(
+            ulong treeId,
             TreeRenderPrototype prototype,
             Vector3 position,
             Vector3 normal,
@@ -425,14 +1040,52 @@ public partial class InfinitMeshTerrain
             Quaternion rotation = Quaternion.FromToRotation(Vector3.up, alignedNormal) * Quaternion.Euler(0f, yaw, 0f);
             float scale = Mathf.Lerp(settings.MinScale, settings.MaxScale, Hash01(instanceHash + 0x1f83d9abu));
             Matrix4x4 rootLocalToChunk = Matrix4x4.TRS(position + alignedNormal * settings.SurfaceOffset, rotation, Vector3.one * scale);
+            Matrix4x4 rootLocalToWorld = chunkLocalToWorld * rootLocalToChunk;
+
+            treeInstances.Add(new TreeInstanceData(
+                treeId,
+                Coord,
+                prototype.PrototypeIndex,
+                settings,
+                ExtractPosition(rootLocalToWorld),
+                ExtractRotation(rootLocalToWorld),
+                ExtractScale(rootLocalToWorld),
+                chunkLocalToWorld.MultiplyVector(alignedNormal).normalized));
 
             TreeRenderItem[] renderItems = prototype.RenderItems;
             for (int i = 0; i < renderItems.Length; i++)
             {
                 TreeRenderItem renderItem = renderItems[i];
-                Matrix4x4 matrix = chunkLocalToWorld * rootLocalToChunk * renderItem.LocalToPrefab;
-                GetTreeRenderBatch(renderItem).Add(matrix);
+                Matrix4x4 matrix = rootLocalToWorld * renderItem.LocalToPrefab;
+                GetTreeRenderBatch(renderItem).Add(treeId, matrix);
             }
+        }
+
+        private static Vector3 ExtractPosition(Matrix4x4 matrix)
+        {
+            Vector4 column = matrix.GetColumn(3);
+            return new Vector3(column.x, column.y, column.z);
+        }
+
+        private static Quaternion ExtractRotation(Matrix4x4 matrix)
+        {
+            Vector3 forward = matrix.GetColumn(2);
+            Vector3 up = matrix.GetColumn(1);
+
+            if (forward.sqrMagnitude < 0.0001f || up.sqrMagnitude < 0.0001f)
+            {
+                return Quaternion.identity;
+            }
+
+            return Quaternion.LookRotation(forward, up);
+        }
+
+        private static Vector3 ExtractScale(Matrix4x4 matrix)
+        {
+            return new Vector3(
+                matrix.GetColumn(0).magnitude,
+                matrix.GetColumn(1).magnitude,
+                matrix.GetColumn(2).magnitude);
         }
 
         private TreeRenderBatch GetTreeRenderBatch(TreeRenderItem item)
@@ -663,13 +1316,27 @@ public partial class InfinitMeshTerrain
             return (Hash(value) >> 8) * (1f / 16777216f);
         }
 
+        private static ulong CreateTreeInstanceId(
+            Vector2Int coord,
+            int cellX,
+            int cellZ,
+            int candidateIndex,
+            int prototypeIndex,
+            uint instanceHash)
+        {
+            uint upper = Hash(coord.x, coord.y, cellX, cellZ, candidateIndex, prototypeIndex);
+            return ((ulong)upper << 32) | instanceHash;
+        }
+
         private sealed class TreeRenderBatch
         {
             private readonly Mesh mesh;
             private readonly Material material;
             private readonly int subMeshIndex;
             private readonly List<Matrix4x4> matrices = new List<Matrix4x4>();
+            private readonly List<ulong> ids = new List<ulong>();
             private readonly List<Matrix4x4[]> drawBatches = new List<Matrix4x4[]>();
+            private readonly List<ulong[]> drawBatchIds = new List<ulong[]>();
 
             public TreeRenderBatch(Mesh mesh, Material material, int subMeshIndex)
             {
@@ -687,37 +1354,66 @@ public partial class InfinitMeshTerrain
                     && subMeshIndex == item.SubMeshIndex;
             }
 
-            public void Add(Matrix4x4 matrix)
+            public void Add(ulong treeId, Matrix4x4 matrix)
             {
+                ids.Add(treeId);
                 matrices.Add(matrix);
             }
 
             public void FinalizeBatches()
             {
                 drawBatches.Clear();
+                drawBatchIds.Clear();
                 for (int start = 0; start < matrices.Count; start += TreeDrawBatchSize)
                 {
                     int count = Mathf.Min(TreeDrawBatchSize, matrices.Count - start);
                     Matrix4x4[] drawBatch = new Matrix4x4[count];
+                    ulong[] idBatch = new ulong[count];
                     matrices.CopyTo(start, drawBatch, 0, count);
+                    ids.CopyTo(start, idBatch, 0, count);
                     drawBatches.Add(drawBatch);
+                    drawBatchIds.Add(idBatch);
                 }
 
+                ids.Clear();
                 matrices.Clear();
             }
 
-            public void Draw(int layer, ShadowCastingMode shadowCastingMode, bool receiveShadows)
+            public void Draw(
+                int layer,
+                ShadowCastingMode shadowCastingMode,
+                bool receiveShadows,
+                HashSet<ulong> removedTreeIds,
+                Dictionary<ulong, ActiveInteractiveTree> hiddenInteractiveTrees,
+                Matrix4x4[] scratchMatrices)
             {
                 if (mesh == null || material == null)
                 {
                     return;
                 }
 
+                bool hasRemovedTrees = removedTreeIds != null && removedTreeIds.Count > 0;
+                bool hasHiddenInteractiveTrees = hiddenInteractiveTrees != null && hiddenInteractiveTrees.Count > 0;
+
                 for (int i = 0; i < drawBatches.Count; i++)
                 {
                     Matrix4x4[] batch = drawBatches[i];
                     if (batch == null || batch.Length == 0)
                     {
+                        continue;
+                    }
+
+                    if (hasRemovedTrees || hasHiddenInteractiveTrees)
+                    {
+                        DrawFilteredBatch(
+                            batch,
+                            drawBatchIds[i],
+                            layer,
+                            shadowCastingMode,
+                            receiveShadows,
+                            removedTreeIds,
+                            hiddenInteractiveTrees,
+                            scratchMatrices);
                         continue;
                     }
 
@@ -734,10 +1430,63 @@ public partial class InfinitMeshTerrain
                 }
             }
 
+            private void DrawFilteredBatch(
+                Matrix4x4[] batch,
+                ulong[] batchIds,
+                int layer,
+                ShadowCastingMode shadowCastingMode,
+                bool receiveShadows,
+                HashSet<ulong> removedTreeIds,
+                Dictionary<ulong, ActiveInteractiveTree> hiddenInteractiveTrees,
+                Matrix4x4[] scratchMatrices)
+            {
+                if (batchIds == null || batchIds.Length != batch.Length)
+                {
+                    return;
+                }
+
+                if (scratchMatrices == null || scratchMatrices.Length < TreeDrawBatchSize)
+                {
+                    scratchMatrices = new Matrix4x4[TreeDrawBatchSize];
+                }
+
+                int visibleCount = 0;
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    ulong treeId = batchIds[i];
+                    if ((removedTreeIds != null && removedTreeIds.Contains(treeId))
+                        || (hiddenInteractiveTrees != null && hiddenInteractiveTrees.ContainsKey(treeId)))
+                    {
+                        continue;
+                    }
+
+                    scratchMatrices[visibleCount] = batch[i];
+                    visibleCount++;
+                }
+
+                if (visibleCount == 0)
+                {
+                    return;
+                }
+
+                Graphics.DrawMeshInstanced(
+                    mesh,
+                    subMeshIndex,
+                    material,
+                    scratchMatrices,
+                    visibleCount,
+                    null,
+                    shadowCastingMode,
+                    receiveShadows,
+                    layer);
+            }
+
             public void Clear()
             {
+                ids.Clear();
                 matrices.Clear();
                 drawBatches.Clear();
+                drawBatchIds.Clear();
             }
         }
     }
