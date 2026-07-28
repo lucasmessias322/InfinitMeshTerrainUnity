@@ -119,8 +119,7 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            TreeRenderLod[] renderLods = CollectTreeRenderLods(prototype.Prefab);
-            TreeRenderPrototype renderPrototype = new TreeRenderPrototype(prototype, i, renderLods);
+            TreeRenderPrototype renderPrototype = new TreeRenderPrototype(prototype, i, CollectTreeRenderVariations(prototype));
             if (!renderPrototype.HasRenderItems)
             {
                 continue;
@@ -131,6 +130,33 @@ public partial class InfinitMeshTerrain
         }
 
         return treeRenderPrototypes;
+    }
+
+    private static TreeRenderVariation[] CollectTreeRenderVariations(TreePrototypeSettings prototype)
+    {
+        if (prototype == null || prototype.PrefabVariationCount <= 0)
+        {
+            return Array.Empty<TreeRenderVariation>();
+        }
+
+        List<TreeRenderVariation> variations = new List<TreeRenderVariation>();
+        for (int variationIndex = 0; variationIndex < prototype.PrefabVariationCount; variationIndex++)
+        {
+            GameObject prefab = prototype.GetPrefabVariation(variationIndex);
+            if (prefab == null)
+            {
+                continue;
+            }
+
+            TreeRenderLod[] renderLods = CollectTreeRenderLods(prefab);
+            TreeRenderVariation variation = new TreeRenderVariation(variationIndex, prefab, renderLods);
+            if (variation.HasRenderItems)
+            {
+                variations.Add(variation);
+            }
+        }
+
+        return variations.ToArray();
     }
 
     public bool IsProceduralTreeRemoved(ulong treeId)
@@ -265,7 +291,7 @@ public partial class InfinitMeshTerrain
                 if (removedTreeIds.Contains(instance.Id)
                     || activeInteractiveTrees.ContainsKey(instance.Id)
                     || instance.PrototypeSettings == null
-                    || instance.PrototypeSettings.InteractionPrefab == null)
+                    || instance.PrototypeSettings.GetInteractionPrefabVariation(instance.VariationIndex) == null)
                 {
                     continue;
                 }
@@ -330,7 +356,9 @@ public partial class InfinitMeshTerrain
     private bool TrySpawnInteractiveTree(TreeInstanceData data)
     {
         TreePrototypeSettings prototypeSettings = data.PrototypeSettings;
-        GameObject prefab = prototypeSettings != null ? prototypeSettings.InteractionPrefab : null;
+        GameObject prefab = prototypeSettings != null
+            ? prototypeSettings.GetInteractionPrefabVariation(data.VariationIndex)
+            : null;
         if (prefab == null || activeInteractiveTrees.ContainsKey(data.Id))
         {
             return false;
@@ -831,23 +859,97 @@ public partial class InfinitMeshTerrain
 
     private sealed class TreeRenderPrototype
     {
-        public TreeRenderPrototype(TreePrototypeSettings settings, int prototypeIndex, TreeRenderLod[] renderLods)
+        public TreeRenderPrototype(TreePrototypeSettings settings, int prototypeIndex, TreeRenderVariation[] variations)
         {
             Settings = settings;
             PrototypeIndex = prototypeIndex;
-            RenderLods = renderLods != null ? renderLods : Array.Empty<TreeRenderLod>();
+            Variations = variations != null ? variations : Array.Empty<TreeRenderVariation>();
         }
 
         public TreePrototypeSettings Settings { get; }
         public int PrototypeIndex { get; }
-        public TreeRenderLod[] RenderLods { get; }
-        public int LodCount => RenderLods.Length;
+        public TreeRenderVariation[] Variations { get; }
+        public int VariationCount => Variations.Length;
+        public int LodCount
+        {
+            get
+            {
+                int lodCount = 1;
+                for (int i = 0; i < Variations.Length; i++)
+                {
+                    lodCount = Mathf.Max(lodCount, Variations[i].LodCount);
+                }
+
+                return lodCount;
+            }
+        }
         public float DensityPerSquareMeter => Settings.DensityPerSquareMeter;
 
         public bool HasRenderItems
         {
             get
             {
+                for (int i = 0; i < Variations.Length; i++)
+                {
+                    if (Variations[i].HasRenderItems)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        public TreeRenderVariation PickVariation(uint instanceHash)
+        {
+            if (Variations.Length == 0)
+            {
+                return default;
+            }
+
+            int variationIndex = Mathf.FloorToInt(Hash01(instanceHash + 0x243f6a88u) * Variations.Length);
+            variationIndex = Mathf.Clamp(variationIndex, 0, Variations.Length - 1);
+            return Variations[variationIndex];
+        }
+
+        private static float Hash01(uint value)
+        {
+            unchecked
+            {
+                value ^= value >> 16;
+                value *= 0x7feb352du;
+                value ^= value >> 15;
+                value *= 0x846ca68bu;
+                value ^= value >> 16;
+                return (value >> 8) * (1f / 16777216f);
+            }
+        }
+    }
+
+    private readonly struct TreeRenderVariation
+    {
+        public TreeRenderVariation(int sourceVariationIndex, GameObject prefab, TreeRenderLod[] renderLods)
+        {
+            SourceVariationIndex = sourceVariationIndex;
+            Prefab = prefab;
+            RenderLods = renderLods != null ? renderLods : Array.Empty<TreeRenderLod>();
+        }
+
+        public int SourceVariationIndex { get; }
+        public GameObject Prefab { get; }
+        public TreeRenderLod[] RenderLods { get; }
+        public int LodCount => RenderLods != null ? RenderLods.Length : 0;
+
+        public bool HasRenderItems
+        {
+            get
+            {
+                if (RenderLods == null)
+                {
+                    return false;
+                }
+
                 for (int i = 0; i < RenderLods.Length; i++)
                 {
                     if (RenderLods[i].HasRenderItems)
@@ -862,7 +964,7 @@ public partial class InfinitMeshTerrain
 
         public TreeRenderItem[] GetRenderItems(int lodIndex)
         {
-            if (RenderLods.Length == 0)
+            if (RenderLods == null || RenderLods.Length == 0)
             {
                 return Array.Empty<TreeRenderItem>();
             }
@@ -894,6 +996,7 @@ public partial class InfinitMeshTerrain
             ulong id,
             Vector2Int coord,
             int prototypeIndex,
+            int variationIndex,
             TreePrototypeSettings prototypeSettings,
             Vector3 position,
             Quaternion rotation,
@@ -903,6 +1006,7 @@ public partial class InfinitMeshTerrain
             Id = id;
             Coord = coord;
             PrototypeIndex = prototypeIndex;
+            VariationIndex = variationIndex;
             PrototypeSettings = prototypeSettings;
             Position = position;
             Rotation = rotation;
@@ -913,6 +1017,7 @@ public partial class InfinitMeshTerrain
         public ulong Id { get; }
         public Vector2Int Coord { get; }
         public int PrototypeIndex { get; }
+        public int VariationIndex { get; }
         public TreePrototypeSettings PrototypeSettings { get; }
         public Vector3 Position { get; }
         public Quaternion Rotation { get; }
@@ -1222,6 +1327,12 @@ public partial class InfinitMeshTerrain
             uint instanceHash)
         {
             TreePrototypeSettings settings = prototype.Settings;
+            TreeRenderVariation variation = prototype.PickVariation(instanceHash);
+            if (!variation.HasRenderItems)
+            {
+                return;
+            }
+
             Vector3 alignedNormal = settings.AlignToNormal
                 ? Vector3.Lerp(Vector3.up, normal, settings.NormalAlignment).normalized
                 : Vector3.up;
@@ -1240,6 +1351,7 @@ public partial class InfinitMeshTerrain
                 treeId,
                 Coord,
                 prototype.PrototypeIndex,
+                variation.SourceVariationIndex,
                 settings,
                 ExtractPosition(rootLocalToWorld),
                 ExtractRotation(rootLocalToWorld),
@@ -1254,7 +1366,7 @@ public partial class InfinitMeshTerrain
 
             for (int lodIndex = 0; lodIndex < treeLodCount; lodIndex++)
             {
-                TreeRenderItem[] renderItems = prototype.GetRenderItems(lodIndex);
+                TreeRenderItem[] renderItems = variation.GetRenderItems(lodIndex);
                 for (int i = 0; i < renderItems.Length; i++)
                 {
                     TreeRenderItem renderItem = renderItems[i];

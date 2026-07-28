@@ -228,8 +228,11 @@ public struct TreeMeshLodDistance
 [Serializable]
 public sealed class TreePrototypeSettings
 {
+    private static readonly GameObject[] EmptyPrefabVariations = Array.Empty<GameObject>();
+
     [Header("Prefab")]
     [SerializeField] private GameObject prefab;
+    [SerializeField] private List<GameObject> prefabVariations = new List<GameObject>();
     [SerializeField, Min(0f), InspectorName("Density Per Hectare")] private float densityPerHectare = 4f;
 
     [Header("Interaction")]
@@ -270,8 +273,10 @@ public sealed class TreePrototypeSettings
     [SerializeField, Range(0f, 1f)] private float forestThreshold = 0.28f;
     [SerializeField, Min(0.001f)] private float forestBlendRange = 0.22f;
 
-    public GameObject Prefab => prefab;
-    public GameObject InteractionPrefab => interactivePrefab != null ? interactivePrefab : prefab;
+    public GameObject Prefab => GetPrefabVariation(0);
+    public IReadOnlyList<GameObject> PrefabVariations => prefabVariations != null ? prefabVariations : EmptyPrefabVariations;
+    public int PrefabVariationCount => CountPrefabVariations();
+    public GameObject InteractionPrefab => GetInteractionPrefabVariation(0);
     public GameObject FelledPrefab => felledPrefab;
     public GameObject StumpPrefab => stumpPrefab;
     public GameObject ResourceDropPrefab => resourceDropPrefab;
@@ -302,7 +307,41 @@ public sealed class TreePrototypeSettings
     public float ForestNoiseFrequency => Mathf.Max(0f, forestNoiseFrequency);
     public float ForestThreshold => Mathf.Clamp01(forestThreshold);
     public float ForestBlendRange => Mathf.Max(0.001f, forestBlendRange);
-    public bool IsSpawnable => prefab != null && DensityPerSquareMeter > 0f;
+    public bool IsSpawnable => PrefabVariationCount > 0 && DensityPerSquareMeter > 0f;
+
+    public GameObject GetPrefabVariation(int variationIndex)
+    {
+        int validVariationCount = CountValidPrefabVariations();
+        if (validVariationCount <= 0)
+        {
+            return prefab;
+        }
+
+        int targetIndex = PositiveModulo(variationIndex, validVariationCount);
+        int currentIndex = 0;
+        for (int i = 0; i < prefabVariations.Count; i++)
+        {
+            GameObject variation = prefabVariations[i];
+            if (variation == null)
+            {
+                continue;
+            }
+
+            if (currentIndex == targetIndex)
+            {
+                return variation;
+            }
+
+            currentIndex++;
+        }
+
+        return prefab;
+    }
+
+    public GameObject GetInteractionPrefabVariation(int variationIndex)
+    {
+        return interactivePrefab != null ? interactivePrefab : GetPrefabVariation(variationIndex);
+    }
 
     public void ValidateValues()
     {
@@ -329,5 +368,46 @@ public sealed class TreePrototypeSettings
         forestThreshold = Mathf.Clamp01(forestThreshold);
         forestBlendRange = Mathf.Max(0.001f, forestBlendRange);
         channel = (InfinitMeshTerrain.SplatChannel)Mathf.Clamp((int)channel, 0, 7);
+
+        if (prefabVariations == null)
+        {
+            prefabVariations = new List<GameObject>();
+        }
+    }
+
+    private int CountPrefabVariations()
+    {
+        int variationCount = CountValidPrefabVariations();
+        return variationCount > 0 || prefab == null ? variationCount : 1;
+    }
+
+    private int CountValidPrefabVariations()
+    {
+        if (prefabVariations == null)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        for (int i = 0; i < prefabVariations.Count; i++)
+        {
+            if (prefabVariations[i] != null)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static int PositiveModulo(int value, int modulo)
+    {
+        if (modulo <= 0)
+        {
+            return 0;
+        }
+
+        int result = value % modulo;
+        return result < 0 ? result + modulo : result;
     }
 }
