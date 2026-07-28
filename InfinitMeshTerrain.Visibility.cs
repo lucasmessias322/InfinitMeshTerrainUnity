@@ -32,7 +32,7 @@ public partial class InfinitMeshTerrain
             Vector2Int coord = candidate.Coord;
             visibleChunkCoords.Add(coord);
 
-            int desiredLod = SelectLod(candidate.DistanceSqr);
+            int desiredLod = ClampLodForCollider(coord, viewerChunk, SelectLod(candidate.DistanceSqr));
             if (!chunks.TryGetValue(coord, out TerrainChunk chunk))
             {
                 chunk = CreateChunk(coord);
@@ -41,6 +41,14 @@ public partial class InfinitMeshTerrain
 
             chunk.SetVisible(true);
             chunk.DesiredLod = desiredLod;
+            if (useCollider && IsChunkInsideColliderDistance(coord, viewerChunk))
+            {
+                QueueColliderUpdate(coord);
+            }
+            else
+            {
+                chunk.DisableCollider();
+            }
         }
 
         foreach (Vector2Int coord in visibleChunkCoords)
@@ -65,6 +73,7 @@ public partial class InfinitMeshTerrain
             }
 
             pair.Value.SetVisible(false);
+            pair.Value.DisableCollider();
 
             Vector2Int delta = pair.Key - viewerChunk;
             bool outsideCache = delta.x * delta.x + delta.y * delta.y > unloadRadiusSqr;
@@ -86,6 +95,7 @@ public partial class InfinitMeshTerrain
             chunk.Dispose();
             chunks.Remove(coord);
             queuedChunks.Remove(coord);
+            queuedColliderChunks.Remove(coord);
         }
 
         lastViewerChunk = viewerChunk;
@@ -103,13 +113,6 @@ public partial class InfinitMeshTerrain
         MeshRenderer meshRenderer = chunkObject.AddComponent<MeshRenderer>();
         ConfigureTerrainRenderer(meshRenderer);
 
-        MeshCollider meshCollider = null;
-        if (useCollider)
-        {
-            meshCollider = chunkObject.AddComponent<MeshCollider>();
-            meshCollider.enabled = false;
-        }
-
-        return new TerrainChunk(coord, chunkObject, meshFilter, meshRenderer, meshCollider);
+        return new TerrainChunk(coord, chunkObject, meshFilter, meshRenderer, null);
     }
 }

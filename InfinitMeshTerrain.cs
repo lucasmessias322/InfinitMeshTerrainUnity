@@ -74,8 +74,15 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     [SerializeField, Range(0f, 1f)] private float slopeRockStrength = 0.9f;
     [SerializeField, Range(0, 5)] private int maxLod = 3;
     [SerializeField, Min(0f)] private float skirtDepth = 32f;
-    [SerializeField] private bool useCollider;
+
+    [Header("Collision")]
+    [SerializeField] private bool useCollider = true;
+    [Tooltip("Square radius, in chunks, that keeps terrain collision alive around the viewer.")]
+    [SerializeField, Min(0)] private int colliderDistanceInChunks = 2;
     [SerializeField, Range(0, 5)] private int colliderMaxLod;
+    [SerializeField, Min(1)] private int maxColliderUpdatesPerFrame = 4;
+
+    [Header("Streaming")]
     [SerializeField, Min(1)] private int maxConcurrentMeshTasks = 4;
     [SerializeField, Min(0)] private int cachedChunkPadding = 2;
 
@@ -92,6 +99,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private readonly Dictionary<Vector2Int, TerrainBuildTask> runningTasks = new Dictionary<Vector2Int, TerrainBuildTask>();
     private readonly Queue<Vector2Int> buildQueue = new Queue<Vector2Int>();
     private readonly HashSet<Vector2Int> queuedChunks = new HashSet<Vector2Int>();
+    private readonly Queue<Vector2Int> colliderUpdateQueue = new Queue<Vector2Int>();
+    private readonly HashSet<Vector2Int> queuedColliderChunks = new HashSet<Vector2Int>();
     private readonly HashSet<Vector2Int> visibleChunkCoords = new HashSet<Vector2Int>();
     private readonly List<Vector2Int> removalBuffer = new List<Vector2Int>();
     private readonly List<ChunkCandidate> candidateBuffer = new List<ChunkCandidate>();
@@ -147,6 +156,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
             RefreshVisibleChunks(viewerChunk);
         }
 
+        ProcessQueuedColliderUpdates();
         UpdateGrassDetails();
         UpdateTreeDetails();
     }
@@ -178,7 +188,9 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         maxConcurrentMeshTasks = Mathf.Max(1, maxConcurrentMeshTasks);
         cachedChunkPadding = Mathf.Max(0, cachedChunkPadding);
         maxLod = Mathf.Clamp(maxLod, 0, 5);
+        colliderDistanceInChunks = Mathf.Clamp(colliderDistanceInChunks, 0, viewDistanceInChunks);
         colliderMaxLod = Mathf.Clamp(colliderMaxLod, 0, maxLod);
+        maxColliderUpdatesPerFrame = Mathf.Max(1, maxColliderUpdatesPerFrame);
         slopeRockChannel = (SplatChannel)Mathf.Clamp((int)slopeRockChannel, 0, MaxTerrainLayerCount - 1);
         slopeRockStartAngle = Mathf.Clamp(slopeRockStartAngle, 0f, 89.9f);
         slopeRockFullAngle = Mathf.Clamp(slopeRockFullAngle, slopeRockStartAngle + 0.01f, 90f);
@@ -192,6 +204,14 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         SyncTreeSettingsSubscription();
         ApplyChunkMaterialToRuntimeChunks();
         RequestVisibleChunkRebuilds();
+        if (useCollider)
+        {
+            QueueVisibleColliderUpdates();
+        }
+        else
+        {
+            DisableAllChunkColliders();
+        }
     }
 
     public void ForceRefresh()

@@ -163,8 +163,7 @@ public partial class InfinitMeshTerrain
                 chunk.Apply(
                     task,
                     chunkMaterial,
-                    useCollider,
-                    colliderMaxLod,
+                    ShouldUseColliderForChunk(coord, task.Lod),
                     terrainLayers,
                     CreateSlopeTextureSettings(),
                     currentTreeSettings,
@@ -196,11 +195,13 @@ public partial class InfinitMeshTerrain
         runningTasks.Clear();
         buildQueue.Clear();
         queuedChunks.Clear();
+        ClearQueuedColliderUpdates();
     }
 
     private void ClearRuntimeChunks()
     {
         ReleaseAllInteractiveTrees(true);
+        ClearQueuedColliderUpdates();
 
         foreach (TerrainChunk chunk in chunks.Values)
         {

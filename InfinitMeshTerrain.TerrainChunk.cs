@@ -9,7 +9,7 @@ public partial class InfinitMeshTerrain
     {
         private readonly GameObject gameObject;
         private readonly MeshRenderer meshRenderer;
-        private readonly MeshCollider meshCollider;
+        private MeshCollider meshCollider;
         private readonly Mesh mesh;
         private MaterialPropertyBlock propertyBlock;
         private readonly Texture2D[] splatMaps = new Texture2D[SplatMapCount];
@@ -44,8 +44,7 @@ public partial class InfinitMeshTerrain
         public void Apply(
             TerrainBuildTask task,
             Material material,
-            bool useCollider,
-            int colliderMaxLod,
+            bool enableCollider,
             TerrainHeightLayer[] terrainLayers,
             SlopeTextureSettings slopeTextureSettings,
             TreeSettingsSO treeSettings,
@@ -72,20 +71,10 @@ public partial class InfinitMeshTerrain
             meshRenderer.receiveShadows = true;
             meshRenderer.renderingLayerMask = 1u;
 
-            if (meshCollider != null)
-            {
-                bool colliderEnabled = useCollider && task.Lod <= colliderMaxLod;
-                meshCollider.enabled = colliderEnabled;
-                meshCollider.sharedMesh = null;
-                if (colliderEnabled)
-                {
-                    meshCollider.sharedMesh = mesh;
-                }
-            }
-
             CurrentLod = task.Lod;
             CurrentStitching = task.Stitching;
             HasMesh = true;
+            SetColliderEnabled(enableCollider, true);
             ApplyGrass(task);
             ApplyTrees(task, treeSettings, treeRenderPrototypes, treeTotalDensity, shouldBuildTrees, terrainSeed, chunkSize, enableWater, waterHeight, terrainLayers, slopeTextureSettings);
         }
@@ -108,6 +97,52 @@ public partial class InfinitMeshTerrain
             if (gameObject.activeSelf != visible)
             {
                 gameObject.SetActive(visible);
+            }
+        }
+
+        public void SetColliderEnabled(bool enabled, bool forceMeshRefresh = false)
+        {
+            if (!enabled || !HasMesh)
+            {
+                DisableCollider();
+                return;
+            }
+
+            if (meshCollider == null)
+            {
+                meshCollider = gameObject.AddComponent<MeshCollider>();
+                meshCollider.enabled = false;
+                forceMeshRefresh = true;
+            }
+
+            if (forceMeshRefresh || meshCollider.sharedMesh != mesh)
+            {
+                meshCollider.enabled = false;
+                meshCollider.sharedMesh = null;
+                meshCollider.sharedMesh = mesh;
+            }
+
+            if (!meshCollider.enabled)
+            {
+                meshCollider.enabled = true;
+            }
+        }
+
+        public void DisableCollider()
+        {
+            if (meshCollider == null)
+            {
+                return;
+            }
+
+            if (meshCollider.enabled)
+            {
+                meshCollider.enabled = false;
+            }
+
+            if (meshCollider.sharedMesh != null)
+            {
+                meshCollider.sharedMesh = null;
             }
         }
 
