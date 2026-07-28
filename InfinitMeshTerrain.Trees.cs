@@ -77,7 +77,7 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            chunk.DrawTrees(layer, shadowCastingMode, receiveShadows, removedTreeIds, hiddenInteractiveTrees, treeDrawScratch);
+            chunk.DrawTrees(settings, viewer.position, layer, shadowCastingMode, receiveShadows, removedTreeIds, hiddenInteractiveTrees, treeDrawScratch);
         }
     }
 
@@ -119,13 +119,14 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            TreeRenderItem[] renderItems = CollectTreeRenderItems(prototype.Prefab);
-            if (renderItems.Length == 0)
+            TreeRenderLod[] renderLods = CollectTreeRenderLods(prototype.Prefab);
+            TreeRenderPrototype renderPrototype = new TreeRenderPrototype(prototype, i, renderLods);
+            if (!renderPrototype.HasRenderItems)
             {
                 continue;
             }
 
-            treeRenderPrototypes.Add(new TreeRenderPrototype(prototype, i, renderItems));
+            treeRenderPrototypes.Add(renderPrototype);
             cachedTreeTotalDensity += prototype.DensityPerSquareMeter;
         }
 
@@ -595,25 +596,95 @@ public partial class InfinitMeshTerrain
         }
     }
 
-    private static TreeRenderItem[] CollectTreeRenderItems(GameObject prefab)
+    private static TreeRenderLod[] CollectTreeRenderLods(GameObject prefab)
     {
         if (prefab == null)
         {
-            return Array.Empty<TreeRenderItem>();
+            return Array.Empty<TreeRenderLod>();
         }
 
-        MeshRenderer[] renderers = prefab.GetComponentsInChildren<MeshRenderer>(true);
-        if (renderers == null || renderers.Length == 0)
+        LODGroup[] lodGroups = prefab.GetComponentsInChildren<LODGroup>(true);
+        if (lodGroups != null && lodGroups.Length > 0)
         {
-            return Array.Empty<TreeRenderItem>();
+            int maxLodCount = 0;
+            LOD[][] lodGroupsData = new LOD[lodGroups.Length][];
+            for (int i = 0; i < lodGroups.Length; i++)
+            {
+                if (lodGroups[i] == null)
+                {
+                    lodGroupsData[i] = Array.Empty<LOD>();
+                    continue;
+                }
+
+                LOD[] lods = lodGroups[i].GetLODs();
+                lodGroupsData[i] = lods != null ? lods : Array.Empty<LOD>();
+                maxLodCount = Mathf.Max(maxLodCount, lodGroupsData[i].Length);
+            }
+
+            if (maxLodCount > 0)
+            {
+                TreeRenderLod[] renderLods = new TreeRenderLod[maxLodCount];
+                List<Renderer> lodRenderers = new List<Renderer>();
+                bool hasAnyRenderItems = false;
+
+                for (int lodIndex = 0; lodIndex < maxLodCount; lodIndex++)
+                {
+                    lodRenderers.Clear();
+                    for (int groupIndex = 0; groupIndex < lodGroupsData.Length; groupIndex++)
+                    {
+                        LOD[] lods = lodGroupsData[groupIndex];
+                        if (lods.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        int sourceLodIndex = Mathf.Min(lodIndex, lods.Length - 1);
+                        Renderer[] renderers = lods[sourceLodIndex].renderers;
+                        if (renderers == null)
+                        {
+                            continue;
+                        }
+
+                        for (int rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
+                        {
+                            Renderer renderer = renderers[rendererIndex];
+                            if (renderer != null && !lodRenderers.Contains(renderer))
+                            {
+                                lodRenderers.Add(renderer);
+                            }
+                        }
+                    }
+
+                    TreeRenderItem[] renderItems = CollectTreeRenderItems(prefab, lodRenderers);
+                    renderLods[lodIndex] = new TreeRenderLod(lodIndex, renderItems);
+                    hasAnyRenderItems |= renderItems.Length > 0;
+                }
+
+                if (hasAnyRenderItems)
+                {
+                    return renderLods;
+                }
+            }
         }
 
+        MeshRenderer[] meshRenderers = prefab.GetComponentsInChildren<MeshRenderer>(true);
+        TreeRenderItem[] fallbackItems = CollectTreeRenderItems(prefab, meshRenderers);
+        if (fallbackItems.Length == 0)
+        {
+            return Array.Empty<TreeRenderLod>();
+        }
+
+        return new[] { new TreeRenderLod(0, fallbackItems) };
+    }
+
+    private static TreeRenderItem[] CollectTreeRenderItems(GameObject prefab, IEnumerable<Renderer> renderers)
+    {
         List<TreeRenderItem> items = new List<TreeRenderItem>();
         Matrix4x4 rootToLocal = prefab.transform.worldToLocalMatrix;
 
-        for (int rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
+        foreach (Renderer renderer in renderers)
         {
-            MeshRenderer meshRenderer = renderers[rendererIndex];
+            MeshRenderer meshRenderer = renderer as MeshRenderer;
             if (meshRenderer == null || !meshRenderer.enabled)
             {
                 continue;
@@ -760,17 +831,61 @@ public partial class InfinitMeshTerrain
 
     private sealed class TreeRenderPrototype
     {
-        public TreeRenderPrototype(TreePrototypeSettings settings, int prototypeIndex, TreeRenderItem[] renderItems)
+        public TreeRenderPrototype(TreePrototypeSettings settings, int prototypeIndex, TreeRenderLod[] renderLods)
         {
             Settings = settings;
             PrototypeIndex = prototypeIndex;
-            RenderItems = renderItems;
+            RenderLods = renderLods != null ? renderLods : Array.Empty<TreeRenderLod>();
         }
 
         public TreePrototypeSettings Settings { get; }
         public int PrototypeIndex { get; }
-        public TreeRenderItem[] RenderItems { get; }
+        public TreeRenderLod[] RenderLods { get; }
+        public int LodCount => RenderLods.Length;
         public float DensityPerSquareMeter => Settings.DensityPerSquareMeter;
+
+        public bool HasRenderItems
+        {
+            get
+            {
+                for (int i = 0; i < RenderLods.Length; i++)
+                {
+                    if (RenderLods[i].HasRenderItems)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        public TreeRenderItem[] GetRenderItems(int lodIndex)
+        {
+            if (RenderLods.Length == 0)
+            {
+                return Array.Empty<TreeRenderItem>();
+            }
+
+            int clampedLodIndex = Mathf.Clamp(lodIndex, 0, RenderLods.Length - 1);
+            for (int i = clampedLodIndex; i < RenderLods.Length; i++)
+            {
+                if (RenderLods[i].HasRenderItems)
+                {
+                    return RenderLods[i].RenderItems;
+                }
+            }
+
+            for (int i = clampedLodIndex - 1; i >= 0; i--)
+            {
+                if (RenderLods[i].HasRenderItems)
+                {
+                    return RenderLods[i].RenderItems;
+                }
+            }
+
+            return Array.Empty<TreeRenderItem>();
+        }
     }
 
     private readonly struct TreeInstanceData
@@ -854,14 +969,84 @@ public partial class InfinitMeshTerrain
         public Matrix4x4 LocalToPrefab { get; }
     }
 
+    private readonly struct TreeRenderLod
+    {
+        public TreeRenderLod(int lodIndex, TreeRenderItem[] renderItems)
+        {
+            LodIndex = lodIndex;
+            RenderItems = renderItems != null ? renderItems : Array.Empty<TreeRenderItem>();
+        }
+
+        public int LodIndex { get; }
+        public TreeRenderItem[] RenderItems { get; }
+        public bool HasRenderItems => RenderItems.Length > 0;
+    }
+
     private sealed partial class TerrainChunk
     {
-        private readonly List<TreeRenderBatch> treeBatches = new List<TreeRenderBatch>();
+        private readonly List<TreeRenderCell> treeRenderCells = new List<TreeRenderCell>();
         private readonly List<TreeInstanceData> treeInstances = new List<TreeInstanceData>();
+        private int treeLodCount = 1;
+        private int treeRenderCellsPerAxis = 1;
+        private float treeRenderCellSize = 1f;
         private bool treesBuilt;
 
         public bool HasTreeBuild => treesBuilt;
         public IReadOnlyList<TreeInstanceData> TreeInstances => treeInstances;
+
+        private int MaxTreeLodIndex => Mathf.Max(0, treeLodCount - 1);
+
+        private static int GetTreeLodCount(IReadOnlyList<TreeRenderPrototype> renderPrototypes)
+        {
+            int lodCount = 1;
+            if (renderPrototypes == null)
+            {
+                return lodCount;
+            }
+
+            for (int i = 0; i < renderPrototypes.Count; i++)
+            {
+                TreeRenderPrototype prototype = renderPrototypes[i];
+                if (prototype != null)
+                {
+                    lodCount = Mathf.Max(lodCount, prototype.LodCount);
+                }
+            }
+
+            return Mathf.Max(1, lodCount);
+        }
+
+        private void RebuildTreeRenderCells(int lodCount, float chunkSize, float requestedCellSize)
+        {
+            treeLodCount = Mathf.Max(1, lodCount);
+            float safeChunkSize = Mathf.Max(1f, chunkSize);
+            float targetCellSize = Mathf.Clamp(requestedCellSize, 16f, safeChunkSize);
+            treeRenderCellsPerAxis = Mathf.Max(1, Mathf.CeilToInt(safeChunkSize / targetCellSize));
+            treeRenderCellSize = safeChunkSize / treeRenderCellsPerAxis;
+
+            Vector2 worldOrigin = new Vector2(Coord.x * safeChunkSize, Coord.y * safeChunkSize);
+            for (int z = 0; z < treeRenderCellsPerAxis; z++)
+            {
+                for (int x = 0; x < treeRenderCellsPerAxis; x++)
+                {
+                    Vector2 min = worldOrigin + new Vector2(x * treeRenderCellSize, z * treeRenderCellSize);
+                    Vector2 max = worldOrigin + new Vector2((x + 1) * treeRenderCellSize, (z + 1) * treeRenderCellSize);
+                    treeRenderCells.Add(new TreeRenderCell(treeLodCount, min, max));
+                }
+            }
+        }
+
+        private TreeRenderCell GetTreeRenderCell(Vector3 chunkLocalPosition)
+        {
+            if (treeRenderCells.Count == 0)
+            {
+                return null;
+            }
+
+            int cellX = Mathf.Clamp(Mathf.FloorToInt(chunkLocalPosition.x / treeRenderCellSize), 0, treeRenderCellsPerAxis - 1);
+            int cellZ = Mathf.Clamp(Mathf.FloorToInt(chunkLocalPosition.z / treeRenderCellSize), 0, treeRenderCellsPerAxis - 1);
+            return treeRenderCells[cellZ * treeRenderCellsPerAxis + cellX];
+        }
 
         public void ApplyTrees(
             TerrainBuildTask task,
@@ -891,6 +1076,7 @@ public partial class InfinitMeshTerrain
                 return;
             }
 
+            RebuildTreeRenderCells(GetTreeLodCount(renderPrototypes), chunkSize, settings.RenderCellSize);
             treesBuilt = true;
             TerrainHeightLayer[] sortedLayers = CopySortedLayers(terrainLayers);
             int cellsPerAxis = Mathf.Max(1, Mathf.CeilToInt(chunkSize / settings.CellSize));
@@ -973,12 +1159,15 @@ public partial class InfinitMeshTerrain
         {
             treesBuilt = false;
             treeInstances.Clear();
-            for (int i = 0; i < treeBatches.Count; i++)
+            for (int i = 0; i < treeRenderCells.Count; i++)
             {
-                treeBatches[i].Clear();
+                treeRenderCells[i].Clear();
             }
 
-            treeBatches.Clear();
+            treeRenderCells.Clear();
+            treeLodCount = 1;
+            treeRenderCellsPerAxis = 1;
+            treeRenderCellSize = 1f;
         }
 
         public bool HasTreeInstance(ulong treeId)
@@ -995,6 +1184,8 @@ public partial class InfinitMeshTerrain
         }
 
         public void DrawTrees(
+            TreeSettingsSO settings,
+            Vector3 viewerPosition,
             int layer,
             ShadowCastingMode shadowCastingMode,
             bool receiveShadows,
@@ -1007,9 +1198,12 @@ public partial class InfinitMeshTerrain
                 return;
             }
 
-            for (int i = 0; i < treeBatches.Count; i++)
+            for (int i = 0; i < treeRenderCells.Count; i++)
             {
-                treeBatches[i].Draw(
+                treeRenderCells[i].Draw(
+                    settings,
+                    viewerPosition,
+                    MaxTreeLodIndex,
                     layer,
                     shadowCastingMode,
                     receiveShadows,
@@ -1052,12 +1246,21 @@ public partial class InfinitMeshTerrain
                 ExtractScale(rootLocalToWorld),
                 chunkLocalToWorld.MultiplyVector(alignedNormal).normalized));
 
-            TreeRenderItem[] renderItems = prototype.RenderItems;
-            for (int i = 0; i < renderItems.Length; i++)
+            TreeRenderCell renderCell = GetTreeRenderCell(position);
+            if (renderCell == null)
             {
-                TreeRenderItem renderItem = renderItems[i];
-                Matrix4x4 matrix = rootLocalToWorld * renderItem.LocalToPrefab;
-                GetTreeRenderBatch(renderItem).Add(treeId, matrix);
+                return;
+            }
+
+            for (int lodIndex = 0; lodIndex < treeLodCount; lodIndex++)
+            {
+                TreeRenderItem[] renderItems = prototype.GetRenderItems(lodIndex);
+                for (int i = 0; i < renderItems.Length; i++)
+                {
+                    TreeRenderItem renderItem = renderItems[i];
+                    Matrix4x4 matrix = rootLocalToWorld * renderItem.LocalToPrefab;
+                    renderCell.GetTreeRenderBatch(lodIndex, renderItem).Add(treeId, matrix);
+                }
             }
         }
 
@@ -1088,31 +1291,16 @@ public partial class InfinitMeshTerrain
                 matrix.GetColumn(2).magnitude);
         }
 
-        private TreeRenderBatch GetTreeRenderBatch(TreeRenderItem item)
-        {
-            for (int i = 0; i < treeBatches.Count; i++)
-            {
-                TreeRenderBatch batch = treeBatches[i];
-                if (batch.Matches(item))
-                {
-                    return batch;
-                }
-            }
-
-            TreeRenderBatch newBatch = new TreeRenderBatch(item.Mesh, item.Material, item.SubMeshIndex);
-            treeBatches.Add(newBatch);
-            return newBatch;
-        }
-
         private void FinalizeTreeBatches()
         {
-            for (int i = treeBatches.Count - 1; i >= 0; i--)
+            for (int i = treeRenderCells.Count - 1; i >= 0; i--)
             {
-                TreeRenderBatch batch = treeBatches[i];
-                batch.FinalizeBatches();
-                if (!batch.HasMatrices)
+                TreeRenderCell renderCell = treeRenderCells[i];
+                renderCell.FinalizeBatches();
+                if (!renderCell.HasMatrices)
                 {
-                    treeBatches.RemoveAt(i);
+                    renderCell.Clear();
+                    treeRenderCells.RemoveAt(i);
                 }
             }
         }
@@ -1328,6 +1516,159 @@ public partial class InfinitMeshTerrain
             return ((ulong)upper << 32) | instanceHash;
         }
 
+        private sealed class TreeRenderCell
+        {
+            private readonly List<TreeRenderBatch>[] lodBatches;
+            private readonly Vector2 min;
+            private readonly Vector2 max;
+
+            public TreeRenderCell(int lodCount, Vector2 min, Vector2 max)
+            {
+                int safeLodCount = Mathf.Max(1, lodCount);
+                lodBatches = new List<TreeRenderBatch>[safeLodCount];
+                for (int i = 0; i < lodBatches.Length; i++)
+                {
+                    lodBatches[i] = new List<TreeRenderBatch>();
+                }
+
+                this.min = min;
+                this.max = max;
+            }
+
+            public bool HasMatrices
+            {
+                get
+                {
+                    for (int lodIndex = 0; lodIndex < lodBatches.Length; lodIndex++)
+                    {
+                        List<TreeRenderBatch> batches = lodBatches[lodIndex];
+                        if (batches != null && batches.Count > 0)
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+            }
+
+            public TreeRenderBatch GetTreeRenderBatch(int lodIndex, TreeRenderItem item)
+            {
+                int clampedLodIndex = Mathf.Clamp(lodIndex, 0, lodBatches.Length - 1);
+                List<TreeRenderBatch> batches = lodBatches[clampedLodIndex];
+                for (int i = 0; i < batches.Count; i++)
+                {
+                    TreeRenderBatch batch = batches[i];
+                    if (batch.Matches(item))
+                    {
+                        return batch;
+                    }
+                }
+
+                TreeRenderBatch newBatch = new TreeRenderBatch(item.Mesh, item.Material, item.SubMeshIndex);
+                batches.Add(newBatch);
+                return newBatch;
+            }
+
+            public void FinalizeBatches()
+            {
+                for (int lodIndex = 0; lodIndex < lodBatches.Length; lodIndex++)
+                {
+                    List<TreeRenderBatch> batches = lodBatches[lodIndex];
+                    if (batches == null)
+                    {
+                        continue;
+                    }
+
+                    for (int i = batches.Count - 1; i >= 0; i--)
+                    {
+                        TreeRenderBatch batch = batches[i];
+                        batch.FinalizeBatches();
+                        if (!batch.HasMatrices)
+                        {
+                            batches.RemoveAt(i);
+                        }
+                    }
+                }
+            }
+
+            public void Draw(
+                TreeSettingsSO settings,
+                Vector3 viewerPosition,
+                int maxTreeLodIndex,
+                int layer,
+                ShadowCastingMode shadowCastingMode,
+                bool receiveShadows,
+                HashSet<ulong> removedTreeIds,
+                Dictionary<ulong, ActiveInteractiveTree> hiddenInteractiveTrees,
+                Matrix4x4[] scratchMatrices)
+            {
+                int lodIndex = SelectLod(settings, viewerPosition, maxTreeLodIndex);
+                if (lodIndex < 0 || lodIndex >= lodBatches.Length)
+                {
+                    return;
+                }
+
+                List<TreeRenderBatch> batches = lodBatches[lodIndex];
+                if (batches == null)
+                {
+                    return;
+                }
+
+                for (int i = 0; i < batches.Count; i++)
+                {
+                    batches[i].Draw(
+                        layer,
+                        shadowCastingMode,
+                        receiveShadows,
+                        removedTreeIds,
+                        hiddenInteractiveTrees,
+                        scratchMatrices);
+                }
+            }
+
+            public void Clear()
+            {
+                for (int lodIndex = 0; lodIndex < lodBatches.Length; lodIndex++)
+                {
+                    List<TreeRenderBatch> batches = lodBatches[lodIndex];
+                    if (batches == null)
+                    {
+                        continue;
+                    }
+
+                    for (int i = 0; i < batches.Count; i++)
+                    {
+                        batches[i].Clear();
+                    }
+
+                    batches.Clear();
+                }
+            }
+
+            private int SelectLod(TreeSettingsSO settings, Vector3 viewerPosition, int maxTreeLodIndex)
+            {
+                if (settings == null
+                    || !settings.ForceInstancedMeshLodByDistance
+                    || lodBatches.Length <= 1)
+                {
+                    return 0;
+                }
+
+                float distanceSqr = GetClosestDistanceSqr(viewerPosition);
+                return settings.SelectInstancedMeshLodByDistanceSqr(distanceSqr, maxTreeLodIndex);
+            }
+
+            private float GetClosestDistanceSqr(Vector3 viewerPosition)
+            {
+                float closestX = Mathf.Clamp(viewerPosition.x, min.x, max.x);
+                float closestZ = Mathf.Clamp(viewerPosition.z, min.y, max.y);
+                float dx = viewerPosition.x - closestX;
+                float dz = viewerPosition.z - closestZ;
+                return dx * dx + dz * dz;
+            }
+        }
+
         private sealed class TreeRenderBatch
         {
             private readonly Mesh mesh;
@@ -1394,6 +1735,7 @@ public partial class InfinitMeshTerrain
 
                 bool hasRemovedTrees = removedTreeIds != null && removedTreeIds.Count > 0;
                 bool hasHiddenInteractiveTrees = hiddenInteractiveTrees != null && hiddenInteractiveTrees.Count > 0;
+                bool needsFiltering = hasRemovedTrees || hasHiddenInteractiveTrees;
 
                 for (int i = 0; i < drawBatches.Count; i++)
                 {
@@ -1403,7 +1745,7 @@ public partial class InfinitMeshTerrain
                         continue;
                     }
 
-                    if (hasRemovedTrees || hasHiddenInteractiveTrees)
+                    if (needsFiltering)
                     {
                         DrawFilteredBatch(
                             batch,

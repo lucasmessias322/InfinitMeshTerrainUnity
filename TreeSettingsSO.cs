@@ -9,6 +9,7 @@ public sealed class TreeSettingsSO : ScriptableObject
     private static readonly TreePrototypeSettings[] EmptyPrototypes = Array.Empty<TreePrototypeSettings>();
 
     public const float DefaultTreeDistance = 1536f;
+    public const float DefaultRenderCellSize = 256f;
     public const float DefaultCellSize = 28f;
     public const int DefaultMaxInstancesPerChunk = 192;
     public const int DefaultMaxInstancesPerCell = 2;
@@ -18,6 +19,9 @@ public sealed class TreeSettingsSO : ScriptableObject
     public const float DefaultInteractiveReleaseDistance = 128f;
     public const int DefaultMaxInteractiveInstances = 96;
     public const int DefaultMaxInteractiveSpawnsPerFrame = 8;
+    public const int MaxInstancedMeshLodIndex = 7;
+
+    private static readonly TreeMeshLodDistance[] EmptyInstancedMeshLodDistances = Array.Empty<TreeMeshLodDistance>();
 
     public event Action Changed;
 
@@ -27,6 +31,15 @@ public sealed class TreeSettingsSO : ScriptableObject
     [SerializeField] private bool unloadOutsideTreeDistance = true;
     [SerializeField] private ShadowCastingMode shadowCastingMode = ShadowCastingMode.On;
     [SerializeField] private bool receiveShadows = true;
+    [SerializeField, Min(16f)] private float renderCellSize = DefaultRenderCellSize;
+    [SerializeField] private bool forceInstancedMeshLodByDistance = true;
+    [SerializeField] private TreeMeshLodDistance[] instancedMeshLodDistances =
+    {
+        new TreeMeshLodDistance(0f, 96f, 0),
+        new TreeMeshLodDistance(96f, 192f, 1),
+        new TreeMeshLodDistance(192f, 384f, 2),
+        new TreeMeshLodDistance(384f, 768f, 3)
+    };
 
     [Header("Interaction Streaming")]
     [SerializeField] private bool enableInteractiveTrees = true;
@@ -51,6 +64,10 @@ public sealed class TreeSettingsSO : ScriptableObject
     public bool UnloadOutsideTreeDistance => unloadOutsideTreeDistance;
     public ShadowCastingMode ShadowCastingMode => shadowCastingMode;
     public bool ReceiveShadows => receiveShadows;
+    public float RenderCellSize => Mathf.Max(16f, renderCellSize);
+    public bool ForceInstancedMeshLodByDistance => forceInstancedMeshLodByDistance;
+    public IReadOnlyList<TreeMeshLodDistance> InstancedMeshLodDistances =>
+        instancedMeshLodDistances != null ? instancedMeshLodDistances : EmptyInstancedMeshLodDistances;
     public bool EnableInteractiveTrees => enableInteractiveTrees;
     public float InteractiveDistance => Mathf.Max(0f, interactiveDistance);
     public float InteractiveReleaseDistance => Mathf.Max(InteractiveDistance, interactiveReleaseDistance);
@@ -85,9 +102,66 @@ public sealed class TreeSettingsSO : ScriptableObject
         return total;
     }
 
+    public int SelectInstancedMeshLodByDistanceSqr(float distanceSqr, int maxAvailableLodIndex)
+    {
+        int clampedMaxLodIndex = Mathf.Clamp(maxAvailableLodIndex, 0, MaxInstancedMeshLodIndex);
+        if (!forceInstancedMeshLodByDistance)
+        {
+            return 0;
+        }
+
+        float treeDistanceValue = TreeDistance;
+        if (distanceSqr > treeDistanceValue * treeDistanceValue)
+        {
+            return -1;
+        }
+
+        IReadOnlyList<TreeMeshLodDistance> distances = InstancedMeshLodDistances;
+        if (distances.Count == 0)
+        {
+            return 0;
+        }
+
+        int nearestLowerLod = Mathf.Clamp(distances[0].MeshLod, 0, clampedMaxLodIndex);
+        float nearestLowerMinSqr = float.NegativeInfinity;
+        int nearestUpperLod = nearestLowerLod;
+        float nearestUpperMinSqr = float.PositiveInfinity;
+
+        for (int i = 0; i < distances.Count; i++)
+        {
+            TreeMeshLodDistance range = distances[i];
+            float minDistance = range.MinDistance;
+            float maxDistance = range.MaxDistance;
+            float minDistanceSqr = minDistance * minDistance;
+            float maxDistanceSqr = maxDistance * maxDistance;
+
+            if (distanceSqr >= minDistanceSqr && distanceSqr < maxDistanceSqr)
+            {
+                return Mathf.Clamp(range.MeshLod, 0, clampedMaxLodIndex);
+            }
+
+            if (distanceSqr >= minDistanceSqr && minDistanceSqr >= nearestLowerMinSqr)
+            {
+                nearestLowerMinSqr = minDistanceSqr;
+                nearestLowerLod = Mathf.Clamp(range.MeshLod, 0, clampedMaxLodIndex);
+            }
+
+            if (distanceSqr < minDistanceSqr && minDistanceSqr < nearestUpperMinSqr)
+            {
+                nearestUpperMinSqr = minDistanceSqr;
+                nearestUpperLod = Mathf.Clamp(range.MeshLod, 0, clampedMaxLodIndex);
+            }
+        }
+
+        return nearestLowerMinSqr > float.NegativeInfinity ? nearestLowerLod : nearestUpperLod;
+    }
+
     public void ValidateValues()
     {
         treeDistance = Mathf.Max(1f, treeDistance);
+        renderCellSize = renderCellSize <= 0f
+            ? DefaultRenderCellSize
+            : Mathf.Max(16f, renderCellSize);
         interactiveDistance = Mathf.Max(0f, interactiveDistance);
         interactiveReleaseDistance = Mathf.Max(interactiveDistance, interactiveReleaseDistance);
         maxInteractiveInstances = Mathf.Max(0, maxInteractiveInstances);
@@ -102,6 +176,16 @@ public sealed class TreeSettingsSO : ScriptableObject
             prototypes = new List<TreePrototypeSettings>();
         }
 
+        if (instancedMeshLodDistances != null)
+        {
+            for (int i = 0; i < instancedMeshLodDistances.Length; i++)
+            {
+                instancedMeshLodDistances[i].ValidateValues();
+            }
+
+            Array.Sort(instancedMeshLodDistances, (a, b) => a.MinDistance.CompareTo(b.MinDistance));
+        }
+
         for (int i = 0; i < prototypes.Count; i++)
         {
             prototypes[i]?.ValidateValues();
@@ -112,6 +196,32 @@ public sealed class TreeSettingsSO : ScriptableObject
     {
         ValidateValues();
         Changed?.Invoke();
+    }
+}
+
+[Serializable]
+public struct TreeMeshLodDistance
+{
+    [SerializeField, Min(0f)] private float minDistance;
+    [SerializeField, Min(0.01f)] private float maxDistance;
+    [SerializeField, Range(0, TreeSettingsSO.MaxInstancedMeshLodIndex)] private int meshLod;
+
+    public TreeMeshLodDistance(float minDistance, float maxDistance, int meshLod)
+    {
+        this.minDistance = Mathf.Max(0f, minDistance);
+        this.maxDistance = Mathf.Max(this.minDistance + 0.01f, maxDistance);
+        this.meshLod = Mathf.Clamp(meshLod, 0, TreeSettingsSO.MaxInstancedMeshLodIndex);
+    }
+
+    public float MinDistance => Mathf.Max(0f, minDistance);
+    public float MaxDistance => Mathf.Max(MinDistance + 0.01f, maxDistance);
+    public int MeshLod => Mathf.Clamp(meshLod, 0, TreeSettingsSO.MaxInstancedMeshLodIndex);
+
+    public void ValidateValues()
+    {
+        minDistance = Mathf.Max(0f, minDistance);
+        maxDistance = Mathf.Max(minDistance + 0.01f, maxDistance);
+        meshLod = Mathf.Clamp(meshLod, 0, TreeSettingsSO.MaxInstancedMeshLodIndex);
     }
 }
 
