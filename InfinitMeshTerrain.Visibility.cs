@@ -29,37 +29,7 @@ public partial class InfinitMeshTerrain
 
         foreach (ChunkCandidate candidate in candidateBuffer)
         {
-            Vector2Int coord = candidate.Coord;
-            visibleChunkCoords.Add(coord);
-
-            int desiredLod = ClampLodForCollider(coord, viewerChunk, SelectLod(candidate.DistanceSqr));
-            if (!chunks.TryGetValue(coord, out TerrainChunk chunk))
-            {
-                chunk = CreateChunk(coord);
-                chunks.Add(coord, chunk);
-            }
-
-            chunk.SetVisible(true);
-            chunk.DesiredLod = desiredLod;
-            if (useCollider && IsChunkInsideColliderDistance(coord, viewerChunk))
-            {
-                QueueColliderUpdate(coord);
-            }
-            else
-            {
-                chunk.DisableCollider();
-            }
-        }
-
-        foreach (Vector2Int coord in visibleChunkCoords)
-        {
-            TerrainChunk chunk = chunks[coord];
-            chunk.DesiredStitching = CalculateDesiredStitching(coord, chunk.DesiredLod);
-
-            if (!chunk.HasMesh || chunk.CurrentLod != chunk.DesiredLod || !chunk.CurrentStitching.Equals(chunk.DesiredStitching))
-            {
-                RequestBuild(coord);
-            }
+            visibleChunkCoords.Add(candidate.Coord);
         }
 
         removalBuffer.Clear();
@@ -91,12 +61,45 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            ReleaseInteractiveTreesForChunk(coord, true);
-            chunk.Dispose();
-            chunks.Remove(coord);
-            queuedChunks.Remove(coord);
-            queuedColliderChunks.Remove(coord);
+            RecycleOrDisposeChunk(coord, chunk);
         }
+
+        foreach (ChunkCandidate candidate in candidateBuffer)
+        {
+            Vector2Int coord = candidate.Coord;
+
+            int desiredLod = ClampLodForCollider(coord, viewerChunk, SelectLod(candidate.DistanceSqr));
+            if (!chunks.TryGetValue(coord, out TerrainChunk chunk))
+            {
+                chunk = CreateChunk(coord);
+                chunks.Add(coord, chunk);
+            }
+
+            chunk.SetVisible(true);
+            chunk.DesiredLod = desiredLod;
+            if (useCollider && IsChunkInsideColliderDistance(coord, viewerChunk))
+            {
+                QueueColliderUpdate(coord);
+            }
+            else
+            {
+                chunk.DisableCollider();
+            }
+        }
+
+        foreach (ChunkCandidate candidate in candidateBuffer)
+        {
+            Vector2Int coord = candidate.Coord;
+            TerrainChunk chunk = chunks[coord];
+            chunk.DesiredStitching = CalculateDesiredStitching(coord, chunk.DesiredLod);
+
+            if (!chunk.HasMesh || chunk.CurrentLod != chunk.DesiredLod || !chunk.CurrentStitching.Equals(chunk.DesiredStitching))
+            {
+                RequestBuild(coord);
+            }
+        }
+
+        PruneQueuedBuildsToVisibleChunks();
 
         lastViewerChunk = viewerChunk;
         lastViewerUpdatePosition = viewer.position;
@@ -105,6 +108,13 @@ public partial class InfinitMeshTerrain
 
     private TerrainChunk CreateChunk(Vector2Int coord)
     {
+        if (pooledChunks.Count > 0)
+        {
+            TerrainChunk pooledChunk = pooledChunks.Pop();
+            pooledChunk.PrepareForUse(coord, transform, chunkSize, chunkMaterial);
+            return pooledChunk;
+        }
+
         GameObject chunkObject = new GameObject($"Terrain Chunk {coord.x}, {coord.y}");
         chunkObject.transform.SetParent(transform, false);
         chunkObject.transform.localPosition = new Vector3(coord.x * chunkSize, 0f, coord.y * chunkSize);
@@ -114,5 +124,22 @@ public partial class InfinitMeshTerrain
         ConfigureTerrainRenderer(meshRenderer);
 
         return new TerrainChunk(coord, chunkObject, meshFilter, meshRenderer, null);
+    }
+
+    private void RecycleOrDisposeChunk(Vector2Int coord, TerrainChunk chunk)
+    {
+        ReleaseInteractiveTreesForChunk(coord, true);
+        chunks.Remove(coord);
+        queuedChunks.Remove(coord);
+        queuedColliderChunks.Remove(coord);
+
+        if (Application.isPlaying && pooledChunks.Count < maxPooledTerrainChunks)
+        {
+            chunk.ReleaseForReuse();
+            pooledChunks.Push(chunk);
+            return;
+        }
+
+        chunk.Dispose();
     }
 }

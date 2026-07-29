@@ -33,6 +33,31 @@ public partial class InfinitMeshTerrain
         }
     }
 
+    private void PruneQueuedBuildsToVisibleChunks()
+    {
+        if (buildQueue.Count == 0)
+        {
+            return;
+        }
+
+        int queuedCount = buildQueue.Count;
+        queuedChunks.Clear();
+
+        for (int i = 0; i < queuedCount; i++)
+        {
+            Vector2Int coord = buildQueue.Dequeue();
+            if (!visibleChunkCoords.Contains(coord)
+                || runningTasks.ContainsKey(coord)
+                || !chunks.ContainsKey(coord)
+                || !queuedChunks.Add(coord))
+            {
+                continue;
+            }
+
+            buildQueue.Enqueue(coord);
+        }
+    }
+
     private TerrainBuildTask ScheduleBuild(Vector2Int coord, int lod, EdgeStitching stitching)
     {
         int step = GetLodStep(lod);
@@ -50,8 +75,8 @@ public partial class InfinitMeshTerrain
         int indexCount = surfaceIndexCount + skirtIndexCount;
         int heightLayerCount = GetTerrainHeightLayerCount();
         int heightSplineSampleCount = GetTerrainSplineSampleCount();
-        int grassInstanceCapacity = ShouldBuildGrassForChunk(coord) ? CalculateGrassInstanceCapacity() : 0;
-        int grassTerrainLayerCount = grassInstanceCapacity > 0 ? GetGrassTerrainLayerCount() : 0;
+        int grassInstanceCapacity = 0;
+        int grassTerrainLayerCount = 0;
 
         TerrainBuildTask task = new TerrainBuildTask(
             coord,
@@ -145,36 +170,35 @@ public partial class InfinitMeshTerrain
             }
         }
 
+        if (completedTaskBuffer.Count == 0)
+        {
+            return;
+        }
+
+        completedTaskSortOrigin = viewer != null ? WorldToChunkCoord(viewer.position) : lastViewerChunk;
+        completedTaskBuffer.Sort(CompareCompletedTaskDistance);
+
+        int appliedCount = 0;
         foreach (Vector2Int coord in completedTaskBuffer)
         {
-            TerrainBuildTask task = runningTasks[coord];
+            if (!runningTasks.TryGetValue(coord, out TerrainBuildTask task))
+            {
+                continue;
+            }
+
+            bool canApply = CanApplyCompletedTask(coord, task, out TerrainChunk chunk);
+            if (canApply && appliedCount >= maxChunkAppliesPerFrame)
+            {
+                continue;
+            }
+
             runningTasks.Remove(coord);
-
             task.Handle.Complete();
-
-            bool canApply = chunks.TryGetValue(coord, out TerrainChunk chunk)
-                && visibleChunkCoords.Contains(coord)
-                && chunk.DesiredLod == task.Lod
-                && chunk.DesiredStitching.Equals(task.Stitching);
 
             if (canApply)
             {
-                TreeSettingsSO currentTreeSettings = treeSettings;
-                IReadOnlyList<TreeRenderPrototype> currentTreeRenderPrototypes = GetTreeRenderPrototypes(currentTreeSettings);
-                chunk.Apply(
-                    task,
-                    chunkMaterial,
-                    ShouldUseColliderForChunk(coord, task.Lod),
-                    terrainLayers,
-                    CreateSlopeTextureSettings(),
-                    currentTreeSettings,
-                    currentTreeRenderPrototypes,
-                    GetTreeTotalDensity(),
-                    ShouldBuildTreesForChunk(coord),
-                    GetTerrainSeed(),
-                    chunkSize,
-                    enableWater,
-                    waterHeight);
+                ApplyCompletedTask(coord, chunk, task);
+                appliedCount++;
             }
             else if (chunks.ContainsKey(coord) && visibleChunkCoords.Contains(coord))
             {
@@ -183,6 +207,55 @@ public partial class InfinitMeshTerrain
 
             task.Dispose();
         }
+    }
+
+    private int CompareCompletedTaskDistance(Vector2Int a, Vector2Int b)
+    {
+        int distanceComparison = GetChunkDistanceSqr(a, completedTaskSortOrigin)
+            .CompareTo(GetChunkDistanceSqr(b, completedTaskSortOrigin));
+        if (distanceComparison != 0)
+        {
+            return distanceComparison;
+        }
+
+        int xComparison = a.x.CompareTo(b.x);
+        return xComparison != 0 ? xComparison : a.y.CompareTo(b.y);
+    }
+
+    private static int GetChunkDistanceSqr(Vector2Int coord, Vector2Int origin)
+    {
+        int dx = coord.x - origin.x;
+        int dy = coord.y - origin.y;
+        return dx * dx + dy * dy;
+    }
+
+    private bool CanApplyCompletedTask(Vector2Int coord, TerrainBuildTask task, out TerrainChunk chunk)
+    {
+        return chunks.TryGetValue(coord, out chunk)
+            && visibleChunkCoords.Contains(coord)
+            && chunk.DesiredLod == task.Lod
+            && chunk.DesiredStitching.Equals(task.Stitching);
+    }
+
+    private void ApplyCompletedTask(Vector2Int coord, TerrainChunk chunk, TerrainBuildTask task)
+    {
+        TreeSettingsSO currentTreeSettings = treeSettings;
+        IReadOnlyList<TreeRenderPrototype> currentTreeRenderPrototypes = GetTreeRenderPrototypes(currentTreeSettings);
+        chunk.Apply(
+            task,
+            chunkMaterial,
+            ShouldUseColliderForChunk(coord, task.Lod),
+            terrainLayers,
+            CreateSlopeTextureSettings(),
+            !ShouldDeferGrassStreaming(),
+            currentTreeSettings,
+            currentTreeRenderPrototypes,
+            GetTreeTotalDensity(),
+            ShouldBuildTreesForChunk(coord),
+            GetTerrainSeed(),
+            chunkSize,
+            enableWater,
+            waterHeight);
     }
 
     private void CompleteAndDisposeAllTasks()
@@ -197,6 +270,7 @@ public partial class InfinitMeshTerrain
         buildQueue.Clear();
         queuedChunks.Clear();
         ClearQueuedColliderUpdates();
+        CompleteAndDisposeAllGrassTasks();
     }
 
     private void ClearRuntimeChunks()
@@ -211,6 +285,16 @@ public partial class InfinitMeshTerrain
 
         chunks.Clear();
         visibleChunkCoords.Clear();
+        DisposePooledChunks();
+    }
+
+    private void DisposePooledChunks()
+    {
+        while (pooledChunks.Count > 0)
+        {
+            TerrainChunk chunk = pooledChunks.Pop();
+            chunk.Dispose();
+        }
     }
 
     private void RequestVisibleChunkRebuilds()

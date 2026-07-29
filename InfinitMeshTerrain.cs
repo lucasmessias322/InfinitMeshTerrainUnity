@@ -130,7 +130,11 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
     [Header("Streaming")]
     [SerializeField, Min(1)] private int maxConcurrentMeshTasks = 4;
+    [Tooltip("Limits how many completed terrain chunks are uploaded to Unity objects in one frame. Lower values reduce spikes when moving fast.")]
+    [SerializeField, Min(1)] private int maxChunkAppliesPerFrame = 1;
     [SerializeField, Min(0)] private int cachedChunkPadding = 2;
+    [Tooltip("Keeps recently unloaded chunk objects for reuse instead of destroying and recreating them while streaming.")]
+    [SerializeField, Min(0)] private int maxPooledTerrainChunks = 256;
 
     [Header("Terrain Shape")]
     [SerializeField] private TerrainShapeSettingsSO terrainShapeSettings;
@@ -151,9 +155,11 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private readonly List<Vector2Int> removalBuffer = new List<Vector2Int>();
     private readonly List<ChunkCandidate> candidateBuffer = new List<ChunkCandidate>();
     private readonly List<Vector2Int> completedTaskBuffer = new List<Vector2Int>();
+    private readonly Stack<TerrainChunk> pooledChunks = new Stack<TerrainChunk>();
 
     private GameObject waterInstance;
     private Vector2Int lastViewerChunk;
+    private Vector2Int completedTaskSortOrigin;
     private Vector3 lastViewerUpdatePosition;
     private bool hasBuiltInitialSet;
     private TerrainShapeSettingsSO subscribedTerrainShapeSettings;
@@ -184,16 +190,17 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
     private void Update()
     {
-        CompleteFinishedTasks();
-        StartQueuedBuilds();
         UpdateWater();
 
         if (viewer == null)
         {
+            CompleteFinishedTasks();
+            CompleteFinishedGrassTasks();
             return;
         }
 
         Vector2Int viewerChunk = WorldToChunkCoord(viewer.position);
+        UpdateGrassStreamingMotion();
         float moveThresholdSqr = viewerMoveThreshold * viewerMoveThreshold;
         bool movedFarEnough = (viewer.position - lastViewerUpdatePosition).sqrMagnitude >= moveThresholdSqr;
 
@@ -202,8 +209,13 @@ public partial class InfinitMeshTerrain : MonoBehaviour
             RefreshVisibleChunks(viewerChunk);
         }
 
+        CompleteFinishedTasks();
+        CompleteFinishedGrassTasks();
+        StartQueuedBuilds();
         ProcessQueuedColliderUpdates();
+        ProcessQueuedGrassUploads();
         UpdateGrassDetails();
+        StartQueuedGrassBuilds();
         UpdateTreeDetails();
     }
 
@@ -232,7 +244,9 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
         lod0VertexMultiplier = Mathf.Clamp(lod0VertexMultiplier, 1, 4);
         maxConcurrentMeshTasks = Mathf.Max(1, maxConcurrentMeshTasks);
+        maxChunkAppliesPerFrame = Mathf.Max(1, maxChunkAppliesPerFrame);
         cachedChunkPadding = Mathf.Max(0, cachedChunkPadding);
+        maxPooledTerrainChunks = Mathf.Max(0, maxPooledTerrainChunks);
         maxLod = Mathf.Clamp(maxLod, 0, 5);
         colliderDistanceInChunks = Mathf.Clamp(colliderDistanceInChunks, 0, viewDistanceInChunks);
         colliderMaxLod = Mathf.Clamp(colliderMaxLod, 0, maxLod);
@@ -250,6 +264,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         SyncTreeSettingsSubscription();
         ApplyChunkMaterialToRuntimeChunks();
         RequestVisibleChunkRebuilds();
+        ClearGrassRuntimeCells();
+        ClearGrassFromRuntimeChunks();
         if (useCollider)
         {
             QueueVisibleColliderUpdates();
@@ -307,6 +323,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
     private void OnTerrainShapeSettingsChanged()
     {
+        ClearGrassRuntimeCells();
+        ClearGrassFromRuntimeChunks();
         RequestVisibleChunkRebuilds();
     }
 
@@ -340,7 +358,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private void OnGrassSettingsChanged()
     {
         ValidateGrassSettings();
+        ClearGrassRuntimeCells();
         ClearGrassFromRuntimeChunks();
-        RequestVisibleChunkRebuilds();
     }
 }

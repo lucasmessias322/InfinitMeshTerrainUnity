@@ -21,7 +21,6 @@ public partial class InfinitMeshTerrain
             MeshRenderer meshRenderer,
             MeshCollider meshCollider)
         {
-            Coord = coord;
             this.gameObject = gameObject;
             this.meshRenderer = meshRenderer;
             this.meshCollider = meshCollider;
@@ -32,14 +31,26 @@ public partial class InfinitMeshTerrain
             };
             mesh.MarkDynamic();
             meshFilter.sharedMesh = mesh;
+            Coord = coord;
         }
 
-        public Vector2Int Coord { get; }
+        public Vector2Int Coord { get; private set; }
         public int CurrentLod { get; private set; } = -1;
         public int DesiredLod { get; set; }
         public EdgeStitching CurrentStitching { get; private set; }
         public EdgeStitching DesiredStitching { get; set; }
         public bool HasMesh { get; private set; }
+
+        public void PrepareForUse(Vector2Int coord, Transform parent, float chunkSize, Material material)
+        {
+            Coord = coord;
+            gameObject.name = $"Terrain Chunk {coord.x}, {coord.y}";
+            gameObject.transform.SetParent(parent, false);
+            gameObject.transform.localPosition = new Vector3(coord.x * chunkSize, 0f, coord.y * chunkSize);
+            mesh.name = $"Terrain Chunk Mesh {coord.x}, {coord.y}";
+            SetMaterial(material);
+            SetVisible(true);
+        }
 
         public void Apply(
             TerrainBuildTask task,
@@ -47,6 +58,7 @@ public partial class InfinitMeshTerrain
             bool enableCollider,
             TerrainHeightLayer[] terrainLayers,
             SlopeTextureSettings slopeTextureSettings,
+            bool applyGrass,
             TreeSettingsSO treeSettings,
             IReadOnlyList<TreeRenderPrototype> treeRenderPrototypes,
             float treeTotalDensity,
@@ -75,7 +87,11 @@ public partial class InfinitMeshTerrain
             CurrentStitching = task.Stitching;
             HasMesh = true;
             SetColliderEnabled(enableCollider, true);
-            ApplyGrass(task);
+            if (task.HasGrassInstances && applyGrass)
+            {
+                ApplyGrass(task);
+            }
+
             ApplyTrees(task, treeSettings, treeRenderPrototypes, treeTotalDensity, shouldBuildTrees, terrainSeed, chunkSize, enableWater, waterHeight, terrainLayers, slopeTextureSettings);
         }
 
@@ -146,6 +162,27 @@ public partial class InfinitMeshTerrain
             }
         }
 
+        public void ReleaseForReuse()
+        {
+            DisableCollider();
+            ClearGrass();
+            ClearTrees();
+            mesh.Clear();
+            mesh.indexFormat = IndexFormat.UInt32;
+            CurrentLod = -1;
+            DesiredLod = 0;
+            CurrentStitching = default;
+            DesiredStitching = default;
+            HasMesh = false;
+            if (propertyBlock != null)
+            {
+                propertyBlock.Clear();
+                ApplyPropertyBlock();
+            }
+
+            SetVisible(false);
+        }
+
         public void Dispose()
         {
             ClearGrass();
@@ -180,6 +217,7 @@ public partial class InfinitMeshTerrain
                 Texture2D splatMap = splatMaps[mapIndex];
                 if (splatMap != null && splatMap.width == resolution && splatMap.height == resolution)
                 {
+                    splatMap.name = $"Terrain SplatMap {mapIndex} {Coord.x}, {Coord.y}";
                     continue;
                 }
 

@@ -1,6 +1,7 @@
 using System;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Serialization;
 
 [CreateAssetMenu(fileName = "GrassSettings", menuName = "Procedural Terrain/Grass Settings")]
 public sealed class GrassSettingsSO : ScriptableObject
@@ -9,9 +10,12 @@ public sealed class GrassSettingsSO : ScriptableObject
 
     public const float DefaultDetailDistance = 1536f;
     public const float DefaultFadeStartDistance = 1152f;
+    public const float DefaultStreamingCellSize = 64f;
     public const float DefaultDetailCellSize = 2f;
     public const float DefaultDensityPerSquareMeter = 0.25f;
-    public const int DefaultMaxInstancesPerChunk = 65536;
+    public const int DefaultMaxInstancesPerGrassCell = 65536;
+    public const int DefaultMaxInstancesPerChunk = DefaultMaxInstancesPerGrassCell;
+    public const int MaxAllowedInstancesPerGrassCell = 65536;
     public const int DefaultMaxInstancesPerCell = 2;
     public const float DefaultJitter = 0.92f;
     public const float DefaultLayerThreshold = 0.18f;
@@ -51,9 +55,10 @@ public sealed class GrassSettingsSO : ScriptableObject
     [SerializeField, Min(0f)] private float fadeStartDistance = DefaultFadeStartDistance;
 
     [Header("Placement")]
+    [SerializeField, Min(8f)] private float streamingCellSize = DefaultStreamingCellSize;
     [SerializeField, Min(0.1f)] private float detailCellSize = DefaultDetailCellSize;
     [SerializeField, Min(0f)] private float densityPerSquareMeter = DefaultDensityPerSquareMeter;
-    [SerializeField, Min(0)] private int maxInstancesPerChunk = DefaultMaxInstancesPerChunk;
+    [SerializeField, FormerlySerializedAs("maxInstancesPerChunk"), Min(0)] private int maxInstancesPerGrassCell = DefaultMaxInstancesPerGrassCell;
     [SerializeField, Range(1, 8)] private int maxInstancesPerCell = DefaultMaxInstancesPerCell;
     [SerializeField, Range(0f, 1f)] private float jitter = DefaultJitter;
     [SerializeField] private InfinitMeshTerrain.SplatChannel channel = InfinitMeshTerrain.SplatChannel.Map0G;
@@ -95,9 +100,11 @@ public sealed class GrassSettingsSO : ScriptableObject
     public bool UnloadOutsideDetailDistance => unloadOutsideDetailDistance;
     public float DetailDistance => Mathf.Max(1f, detailDistance);
     public float FadeStartDistance => GetValidatedFadeStartDistance();
+    public float StreamingCellSize => Mathf.Max(8f, streamingCellSize);
     public float DetailCellSize => Mathf.Max(0.1f, detailCellSize);
     public float DensityPerSquareMeter => Mathf.Max(0f, densityPerSquareMeter);
-    public int MaxInstancesPerChunk => Mathf.Max(0, maxInstancesPerChunk);
+    public int MaxInstancesPerGrassCell => Mathf.Clamp(maxInstancesPerGrassCell, 0, MaxAllowedInstancesPerGrassCell);
+    public int MaxInstancesPerChunk => MaxInstancesPerGrassCell;
     public int MaxInstancesPerCell => Mathf.Clamp(maxInstancesPerCell, 1, 8);
     public float Jitter => Mathf.Clamp01(jitter);
     public int ChannelIndex => Mathf.Clamp((int)channel, 0, MaxSplatChannelCount - 1);
@@ -135,9 +142,10 @@ public sealed class GrassSettingsSO : ScriptableObject
     {
         detailDistance = Mathf.Max(1f, detailDistance);
         fadeStartDistance = GetValidatedFadeStartDistance();
+        streamingCellSize = Mathf.Max(8f, streamingCellSize);
         detailCellSize = Mathf.Max(0.1f, detailCellSize);
         densityPerSquareMeter = Mathf.Max(0f, densityPerSquareMeter);
-        maxInstancesPerChunk = Mathf.Max(0, maxInstancesPerChunk);
+        maxInstancesPerGrassCell = Mathf.Clamp(maxInstancesPerGrassCell, 0, MaxAllowedInstancesPerGrassCell);
         maxInstancesPerCell = Mathf.Clamp(maxInstancesPerCell, 1, 8);
         jitter = Mathf.Clamp01(jitter);
         channel = (InfinitMeshTerrain.SplatChannel)Mathf.Clamp((int)channel, 0, MaxSplatChannelCount - 1);

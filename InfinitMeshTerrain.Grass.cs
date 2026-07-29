@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
@@ -10,6 +11,7 @@ public partial class InfinitMeshTerrain
 {
     private const string GrassShaderName = "Shader Graphs/GrassShaderGraph";
     private const int GrassInstanceStride = 48;
+    private const int MaxGrassSurfaceResolution = 257;
     private static readonly int GrassInstancesPropertyId = Shader.PropertyToID("_GrassInstances");
     private static readonly int GrassViewerPositionPropertyId = Shader.PropertyToID("_ViewerPosition");
     private static readonly int GrassFadeDistancesPropertyId = Shader.PropertyToID("_FadeDistances");
@@ -18,27 +20,145 @@ public partial class InfinitMeshTerrain
 
     [Header("Detail Grass")]
     [SerializeField] private GrassSettingsSO grassSettings;
+    [Tooltip("Grass buffer uploads are skipped while the viewer is faster than this. Use 0 to never defer grass uploads.")]
+    [SerializeField, Min(0f)] private float grassUploadMaxViewerSpeed = 192f;
+    [Tooltip("Extra time to wait after fast movement before scheduling grass rebuilds again.")]
+    [SerializeField, Min(0f)] private float grassUploadSettleDelay = 0.2f;
+    [Tooltip("Maximum grass instances copied to GPU buffers per frame. Lower values reduce upload spikes.")]
+    [SerializeField, Min(1)] private int maxGrassUploadInstancesPerFrame = 8192;
+    [SerializeField, Min(1)] private int maxGrassBuildRequestsPerFrame = 2;
+    [SerializeField, Min(1)] private int maxConcurrentGrassBuildTasks = 2;
 
     private Mesh runtimeGrassMesh;
     private Material runtimeGrassMaterial;
     private GrassSettingsSO runtimeDefaultGrassSettings;
+    private readonly Dictionary<Vector2Int, GrassCell> grassCells = new Dictionary<Vector2Int, GrassCell>();
+    private readonly Dictionary<Vector2Int, GrassBuildTask> runningGrassTasks = new Dictionary<Vector2Int, GrassBuildTask>();
+    private readonly Queue<Vector2Int> grassBuildQueue = new Queue<Vector2Int>();
+    private readonly HashSet<Vector2Int> queuedGrassCells = new HashSet<Vector2Int>();
+    private readonly HashSet<Vector2Int> visibleGrassCellCoords = new HashSet<Vector2Int>();
+    private readonly List<Vector2Int> grassRemovalBuffer = new List<Vector2Int>();
+    private readonly List<Vector2Int> completedGrassTaskBuffer = new List<Vector2Int>();
+    private readonly List<ChunkCandidate> grassVisibilityCandidateBuffer = new List<ChunkCandidate>();
+    private readonly List<ChunkCandidate> grassBuildCandidateBuffer = new List<ChunkCandidate>();
+    private readonly List<ChunkCandidate> grassUploadCandidateBuffer = new List<ChunkCandidate>();
+    private Vector3 lastGrassViewerPosition;
+    private Vector2Int completedGrassTaskSortOrigin;
+    private float grassViewerSpeed;
+    private float lastFastGrassMoveTime = float.NegativeInfinity;
+    private bool hasGrassViewerMotionSample;
 
     private void ValidateGrassSettings()
     {
+        grassUploadMaxViewerSpeed = Mathf.Max(0f, grassUploadMaxViewerSpeed);
+        grassUploadSettleDelay = Mathf.Max(0f, grassUploadSettleDelay);
+        maxGrassUploadInstancesPerFrame = Mathf.Max(1, maxGrassUploadInstancesPerFrame);
+        maxGrassBuildRequestsPerFrame = Mathf.Max(1, maxGrassBuildRequestsPerFrame);
+        maxConcurrentGrassBuildTasks = Mathf.Max(1, maxConcurrentGrassBuildTasks);
+
         if (grassSettings != null)
         {
             grassSettings.ValidateValues();
         }
     }
 
+    private void UpdateGrassStreamingMotion()
+    {
+        if (viewer == null)
+        {
+            grassViewerSpeed = 0f;
+            hasGrassViewerMotionSample = false;
+            return;
+        }
+
+        Vector3 viewerPosition = viewer.position;
+        if (!hasGrassViewerMotionSample)
+        {
+            lastGrassViewerPosition = viewerPosition;
+            grassViewerSpeed = 0f;
+            hasGrassViewerMotionSample = true;
+            return;
+        }
+
+        float deltaTime = Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
+        grassViewerSpeed = (viewerPosition - lastGrassViewerPosition).magnitude / deltaTime;
+        lastGrassViewerPosition = viewerPosition;
+
+        if (grassUploadMaxViewerSpeed > 0f && grassViewerSpeed > grassUploadMaxViewerSpeed)
+        {
+            lastFastGrassMoveTime = Time.unscaledTime;
+        }
+    }
+
+    private bool ShouldDeferGrassStreaming()
+    {
+        if (grassUploadMaxViewerSpeed <= 0f)
+        {
+            return false;
+        }
+
+        if (grassViewerSpeed > grassUploadMaxViewerSpeed)
+        {
+            return true;
+        }
+
+        return Time.unscaledTime - lastFastGrassMoveTime < grassUploadSettleDelay;
+    }
+
+    private void ProcessQueuedGrassUploads()
+    {
+        if (viewer == null || ShouldDeferGrassStreaming())
+        {
+            return;
+        }
+
+        grassUploadCandidateBuffer.Clear();
+        float grassCellSize = GetGrassStreamingCellSize(GetGrassSettings());
+        Vector2Int viewerCell = WorldToGrassCellCoord(viewer.position, grassCellSize);
+
+        foreach (Vector2Int coord in visibleGrassCellCoords)
+        {
+            if (grassCells.TryGetValue(coord, out GrassCell cell) && cell.HasPendingGrassUpload)
+            {
+                grassUploadCandidateBuffer.Add(new ChunkCandidate(coord, GetGrassCellDistanceSqr(coord, viewerCell)));
+            }
+        }
+
+        if (grassUploadCandidateBuffer.Count == 0)
+        {
+            return;
+        }
+
+        grassUploadCandidateBuffer.Sort((a, b) => a.DistanceSqr.CompareTo(b.DistanceSqr));
+        int remainingUploadBudget = maxGrassUploadInstancesPerFrame;
+        for (int i = 0; i < grassUploadCandidateBuffer.Count && remainingUploadBudget > 0; i++)
+        {
+            Vector2Int coord = grassUploadCandidateBuffer[i].Coord;
+            if (!grassCells.TryGetValue(coord, out GrassCell cell))
+            {
+                continue;
+            }
+
+            remainingUploadBudget -= cell.UploadPendingGrass(remainingUploadBudget);
+        }
+    }
+
     private void UpdateGrassDetails()
     {
         GrassSettingsSO settings = GetGrassSettings();
-        if (settings == null || !settings.EnableGrass || viewer == null || settings.DensityPerSquareMeter <= 0f || settings.DetailDistance <= 0f)
+        if (settings == null
+            || !settings.EnableGrass
+            || viewer == null
+            || settings.DensityPerSquareMeter <= 0f
+            || settings.DetailDistance <= 0f
+            || settings.MaxInstancesPerGrassCell <= 0)
         {
+            ClearGrassRuntimeCells();
             ClearGrassFromRuntimeChunks();
             return;
         }
+
+        RefreshVisibleGrassCells(settings);
 
         Mesh drawMesh = GetGrassRenderMesh(settings);
         Material drawMaterial = GetGrassRenderMaterial(settings);
@@ -56,31 +176,29 @@ public partial class InfinitMeshTerrain
         Vector4 fadeDistances = new Vector4(settings.FadeStartDistance, settings.DetailDistance, 0f, 0f);
         Vector4 meshGrounding = new Vector4(0f, settings.SurfaceOffset, 0f, 0f);
         int layer = gameObject.layer;
+        bool deferGrassStreaming = ShouldDeferGrassStreaming();
+        float grassCellSize = GetGrassStreamingCellSize(settings);
+        Vector2Int viewerCell = WorldToGrassCellCoord(viewer.position, grassCellSize);
+        grassBuildCandidateBuffer.Clear();
 
-        foreach (Vector2Int coord in visibleChunkCoords)
+        foreach (Vector2Int coord in visibleGrassCellCoords)
         {
-            if (!chunks.TryGetValue(coord, out TerrainChunk chunk) || !chunk.HasMesh)
+            if (!grassCells.TryGetValue(coord, out GrassCell cell))
             {
                 continue;
             }
 
-            if (!IsChunkInsideGrassDistance(coord, settings.DetailDistance))
+            if (!cell.HasGrassBuild)
             {
-                if (settings.UnloadOutsideDetailDistance)
+                if (!deferGrassStreaming)
                 {
-                    chunk.ClearGrass();
+                    grassBuildCandidateBuffer.Add(new ChunkCandidate(coord, GetGrassCellDistanceSqr(coord, viewerCell)));
                 }
 
                 continue;
             }
 
-            if (!chunk.HasGrass)
-            {
-                RequestBuild(coord);
-                continue;
-            }
-
-            chunk.DrawGrass(
+            cell.DrawGrass(
                 drawMesh,
                 drawMaterial,
                 viewer.position,
@@ -91,44 +209,411 @@ public partial class InfinitMeshTerrain
                 settings.ReceiveShadows,
                 layer);
         }
-    }
 
-    private bool ShouldBuildGrassForChunk(Vector2Int coord)
-    {
-        GrassSettingsSO settings = GetGrassSettings();
-        if (settings == null || !settings.EnableGrass || viewer == null || settings.DensityPerSquareMeter <= 0f || settings.MaxInstancesPerChunk <= 0)
+        if (deferGrassStreaming || grassBuildCandidateBuffer.Count == 0)
         {
-            return false;
+            return;
         }
 
-        return IsChunkInsideGrassDistance(coord, settings.DetailDistance + chunkSize * 0.75f);
+        grassBuildCandidateBuffer.Sort((a, b) => a.DistanceSqr.CompareTo(b.DistanceSqr));
+        int requestCount = Mathf.Min(maxGrassBuildRequestsPerFrame, grassBuildCandidateBuffer.Count);
+        for (int i = 0; i < requestCount; i++)
+        {
+            RequestGrassBuild(grassBuildCandidateBuffer[i].Coord);
+        }
     }
 
-    private bool IsChunkInsideGrassDistance(Vector2Int coord, float distance)
+    private void RefreshVisibleGrassCells(GrassSettingsSO settings)
+    {
+        visibleGrassCellCoords.Clear();
+        grassVisibilityCandidateBuffer.Clear();
+
+        if (viewer == null)
+        {
+            return;
+        }
+
+        float grassCellSize = GetGrassStreamingCellSize(settings);
+        Vector2Int viewerCell = WorldToGrassCellCoord(viewer.position, grassCellSize);
+        int radius = Mathf.Max(1, Mathf.CeilToInt(settings.DetailDistance / grassCellSize) + 1);
+
+        for (int z = -radius; z <= radius; z++)
+        {
+            for (int x = -radius; x <= radius; x++)
+            {
+                Vector2Int coord = viewerCell + new Vector2Int(x, z);
+                if (!IsGrassCellInsideDistance(coord, grassCellSize, settings.DetailDistance))
+                {
+                    continue;
+                }
+
+                grassVisibilityCandidateBuffer.Add(new ChunkCandidate(coord, x * x + z * z));
+            }
+        }
+
+        grassVisibilityCandidateBuffer.Sort((a, b) => a.DistanceSqr.CompareTo(b.DistanceSqr));
+        foreach (ChunkCandidate candidate in grassVisibilityCandidateBuffer)
+        {
+            visibleGrassCellCoords.Add(candidate.Coord);
+            if (!grassCells.ContainsKey(candidate.Coord))
+            {
+                grassCells.Add(candidate.Coord, new GrassCell(candidate.Coord));
+            }
+        }
+
+        if (settings.UnloadOutsideDetailDistance)
+        {
+            grassRemovalBuffer.Clear();
+            foreach (KeyValuePair<Vector2Int, GrassCell> pair in grassCells)
+            {
+                if (!visibleGrassCellCoords.Contains(pair.Key))
+                {
+                    grassRemovalBuffer.Add(pair.Key);
+                }
+            }
+
+            foreach (Vector2Int coord in grassRemovalBuffer)
+            {
+                RemoveGrassCell(coord);
+            }
+        }
+
+        PruneQueuedGrassBuildsToVisibleCells();
+    }
+
+    private bool IsGrassCellInsideDistance(Vector2Int coord, float grassCellSize, float distance)
     {
         if (viewer == null)
         {
             return false;
         }
 
-        Vector2 chunkCenter = new Vector2((coord.x + 0.5f) * chunkSize, (coord.y + 0.5f) * chunkSize);
+        Vector2 cellCenter = new Vector2((coord.x + 0.5f) * grassCellSize, (coord.y + 0.5f) * grassCellSize);
         Vector2 viewerPosition = new Vector2(viewer.position.x, viewer.position.z);
-        float chunkRadius = chunkSize * 0.707107f;
-        float allowedDistance = Mathf.Max(0f, distance) + chunkRadius;
-        return (chunkCenter - viewerPosition).sqrMagnitude <= allowedDistance * allowedDistance;
+        float cellRadius = grassCellSize * 0.707107f;
+        float allowedDistance = Mathf.Max(0f, distance) + cellRadius;
+        return (cellCenter - viewerPosition).sqrMagnitude <= allowedDistance * allowedDistance;
     }
 
-    private int CalculateGrassInstanceCapacity()
+    private int CalculateGrassInstanceCapacity(float grassCellSize)
     {
         GrassSettingsSO settings = GetGrassSettings();
-        if (settings == null || !settings.EnableGrass || settings.MaxInstancesPerChunk <= 0 || settings.DensityPerSquareMeter <= 0f)
+        if (settings == null || !settings.EnableGrass || settings.MaxInstancesPerGrassCell <= 0 || settings.DensityPerSquareMeter <= 0f)
         {
             return 0;
         }
 
-        int cellsPerAxis = Mathf.Max(1, Mathf.CeilToInt(chunkSize / settings.DetailCellSize));
+        int cellsPerAxis = Mathf.Max(1, Mathf.CeilToInt(grassCellSize / settings.DetailCellSize));
         long maxByCells = (long)cellsPerAxis * cellsPerAxis * settings.MaxInstancesPerCell;
-        return (int)Mathf.Min(settings.MaxInstancesPerChunk, maxByCells);
+        return (int)Mathf.Min(settings.MaxInstancesPerGrassCell, maxByCells);
+    }
+
+    private void RequestGrassBuild(Vector2Int coord)
+    {
+        if (!visibleGrassCellCoords.Contains(coord)
+            || runningGrassTasks.ContainsKey(coord)
+            || queuedGrassCells.Contains(coord))
+        {
+            return;
+        }
+
+        if (grassCells.TryGetValue(coord, out GrassCell cell)
+            && (cell.HasGrassBuild || cell.HasPendingGrassUpload))
+        {
+            return;
+        }
+
+        grassBuildQueue.Enqueue(coord);
+        queuedGrassCells.Add(coord);
+    }
+
+    private void StartQueuedGrassBuilds()
+    {
+        if (viewer == null || ShouldDeferGrassStreaming())
+        {
+            return;
+        }
+
+        GrassSettingsSO settings = GetGrassSettings();
+        if (settings == null
+            || !settings.EnableGrass
+            || settings.DensityPerSquareMeter <= 0f
+            || settings.MaxInstancesPerGrassCell <= 0)
+        {
+            return;
+        }
+
+        float grassCellSize = GetGrassStreamingCellSize(settings);
+        int grassInstanceCapacity = CalculateGrassInstanceCapacity(grassCellSize);
+        while (runningGrassTasks.Count < maxConcurrentGrassBuildTasks && grassBuildQueue.Count > 0)
+        {
+            Vector2Int coord = grassBuildQueue.Dequeue();
+            queuedGrassCells.Remove(coord);
+
+            if (!visibleGrassCellCoords.Contains(coord)
+                || !grassCells.TryGetValue(coord, out GrassCell cell)
+                || cell.HasGrassBuild
+                || cell.HasPendingGrassUpload)
+            {
+                continue;
+            }
+
+            if (grassInstanceCapacity <= 0)
+            {
+                cell.ApplyEmpty();
+                continue;
+            }
+
+            GrassBuildTask task = ScheduleGrassBuild(coord, grassCellSize, grassInstanceCapacity);
+            runningGrassTasks.Add(coord, task);
+        }
+    }
+
+    private GrassBuildTask ScheduleGrassBuild(Vector2Int coord, float grassCellSize, int grassInstanceCapacity)
+    {
+        int surfaceResolution = CalculateGrassSurfaceResolution(grassCellSize);
+        int surfaceVertexCount = surfaceResolution * surfaceResolution;
+        int heightLayerCount = GetTerrainHeightLayerCount();
+        int heightSplineSampleCount = GetTerrainSplineSampleCount();
+        int grassTerrainLayerCount = grassInstanceCapacity > 0 ? GetGrassTerrainLayerCount() : 0;
+
+        GrassBuildTask task = new GrassBuildTask(
+            coord,
+            grassCellSize,
+            surfaceVertexCount,
+            surfaceResolution,
+            heightLayerCount,
+            heightSplineSampleCount,
+            grassInstanceCapacity,
+            grassTerrainLayerCount);
+        CopyTerrainHeightLayers(task.HeightLayers, task.HeightSplineSamples);
+        CopyGrassTerrainLayers(task.GrassTerrainLayers);
+
+        TerrainSettings terrainSettings = CreateTerrainSettings();
+        float2 cellOrigin = GrassCellOrigin(coord, grassCellSize);
+
+        GenerateTerrainVerticesJob surfaceJob = new GenerateTerrainVerticesJob
+        {
+            Vertices = task.Vertices,
+            Normals = task.Normals,
+            Uvs = task.Uvs,
+            Settings = terrainSettings,
+            HeightLayers = task.HeightLayers,
+            HeightSplineSamples = task.HeightSplineSamples,
+            HeightLayerCount = task.HeightLayers.IsCreated ? task.HeightLayers.Length : 0,
+            ChunkOrigin = cellOrigin,
+            ChunkSize = grassCellSize,
+            SkirtDepth = 0f,
+            Resolution = surfaceResolution,
+            BaseVertexCount = surfaceVertexCount,
+            SegmentCount = surfaceResolution - 1,
+            LodStep = 1,
+            Stitching = default
+        };
+
+        GenerateGrassInstancesJob grassJob = new GenerateGrassInstancesJob
+        {
+            Vertices = task.Vertices,
+            Normals = task.Normals,
+            TerrainLayers = task.GrassTerrainLayers,
+            GrassInstances = task.GrassInstances,
+            GrassInstanceCounter = task.GrassInstanceCounter,
+            GrassBounds = task.GrassBounds,
+            Settings = CreateGrassBuildSettings(),
+            SlopeTextureSettings = CreateSlopeTextureSettings(),
+            ChunkCoord = new int2(coord.x, coord.y),
+            ChunkOrigin = cellOrigin,
+            ChunkSize = grassCellSize,
+            Resolution = surfaceResolution,
+            BaseVertexCount = surfaceVertexCount
+        };
+
+        JobHandle surfaceHandle = surfaceJob.ScheduleParallel(surfaceVertexCount, 64, default);
+        task.Handle = grassJob.Schedule(surfaceHandle);
+        return task;
+    }
+
+    private void CompleteFinishedGrassTasks()
+    {
+        if (runningGrassTasks.Count == 0)
+        {
+            return;
+        }
+
+        completedGrassTaskBuffer.Clear();
+        foreach (KeyValuePair<Vector2Int, GrassBuildTask> pair in runningGrassTasks)
+        {
+            if (pair.Value.Handle.IsCompleted)
+            {
+                completedGrassTaskBuffer.Add(pair.Key);
+            }
+        }
+
+        if (completedGrassTaskBuffer.Count == 0)
+        {
+            return;
+        }
+
+        float grassCellSize = GetGrassStreamingCellSize(GetGrassSettings());
+        completedGrassTaskSortOrigin = viewer != null
+            ? WorldToGrassCellCoord(viewer.position, grassCellSize)
+            : default;
+        completedGrassTaskBuffer.Sort(CompareCompletedGrassTaskDistance);
+
+        int appliedCount = 0;
+        foreach (Vector2Int coord in completedGrassTaskBuffer)
+        {
+            if (!runningGrassTasks.TryGetValue(coord, out GrassBuildTask task))
+            {
+                continue;
+            }
+
+            bool canApply = CanApplyCompletedGrassTask(coord, task, out GrassCell cell);
+            if (canApply && appliedCount >= maxGrassBuildRequestsPerFrame)
+            {
+                continue;
+            }
+
+            runningGrassTasks.Remove(coord);
+            task.Handle.Complete();
+
+            if (canApply)
+            {
+                cell.Apply(task);
+                appliedCount++;
+            }
+            else if (visibleGrassCellCoords.Contains(coord) && grassCells.ContainsKey(coord))
+            {
+                RequestGrassBuild(coord);
+            }
+
+            task.Dispose();
+        }
+    }
+
+    private int CompareCompletedGrassTaskDistance(Vector2Int a, Vector2Int b)
+    {
+        int distanceComparison = GetGrassCellDistanceSqr(a, completedGrassTaskSortOrigin)
+            .CompareTo(GetGrassCellDistanceSqr(b, completedGrassTaskSortOrigin));
+        if (distanceComparison != 0)
+        {
+            return distanceComparison;
+        }
+
+        int xComparison = a.x.CompareTo(b.x);
+        return xComparison != 0 ? xComparison : a.y.CompareTo(b.y);
+    }
+
+    private bool CanApplyCompletedGrassTask(Vector2Int coord, GrassBuildTask task, out GrassCell cell)
+    {
+        float currentCellSize = GetGrassStreamingCellSize(GetGrassSettings());
+        return grassCells.TryGetValue(coord, out cell)
+            && visibleGrassCellCoords.Contains(coord)
+            && Mathf.Abs(task.CellSize - currentCellSize) <= 0.001f;
+    }
+
+    private void PruneQueuedGrassBuildsToVisibleCells()
+    {
+        if (grassBuildQueue.Count == 0)
+        {
+            return;
+        }
+
+        int queuedCount = grassBuildQueue.Count;
+        queuedGrassCells.Clear();
+
+        for (int i = 0; i < queuedCount; i++)
+        {
+            Vector2Int coord = grassBuildQueue.Dequeue();
+            if (!visibleGrassCellCoords.Contains(coord)
+                || runningGrassTasks.ContainsKey(coord)
+                || !grassCells.ContainsKey(coord)
+                || !queuedGrassCells.Add(coord))
+            {
+                continue;
+            }
+
+            grassBuildQueue.Enqueue(coord);
+        }
+    }
+
+    private void CompleteAndDisposeAllGrassTasks()
+    {
+        foreach (KeyValuePair<Vector2Int, GrassBuildTask> pair in runningGrassTasks)
+        {
+            pair.Value.Handle.Complete();
+            pair.Value.Dispose();
+        }
+
+        runningGrassTasks.Clear();
+        grassBuildQueue.Clear();
+        queuedGrassCells.Clear();
+        completedGrassTaskBuffer.Clear();
+    }
+
+    private void RemoveGrassCell(Vector2Int coord)
+    {
+        queuedGrassCells.Remove(coord);
+
+        if (!grassCells.TryGetValue(coord, out GrassCell cell))
+        {
+            return;
+        }
+
+        cell.Dispose();
+        grassCells.Remove(coord);
+    }
+
+    private void ClearGrassRuntimeCells()
+    {
+        CompleteAndDisposeAllGrassTasks();
+
+        foreach (GrassCell cell in grassCells.Values)
+        {
+            cell.Dispose();
+        }
+
+        grassCells.Clear();
+        visibleGrassCellCoords.Clear();
+        grassRemovalBuffer.Clear();
+        grassVisibilityCandidateBuffer.Clear();
+        grassBuildCandidateBuffer.Clear();
+        grassUploadCandidateBuffer.Clear();
+    }
+
+    private int CalculateGrassSurfaceResolution(float grassCellSize)
+    {
+        float terrainSampleSpacing = chunkSize / Mathf.Max(1, GetEffectiveSegmentCount());
+        int segmentCount = Mathf.CeilToInt(grassCellSize / Mathf.Max(0.25f, terrainSampleSpacing));
+        segmentCount = Mathf.Clamp(segmentCount, 1, MaxGrassSurfaceResolution - 1);
+        return segmentCount + 1;
+    }
+
+    private float GetGrassStreamingCellSize(GrassSettingsSO settings)
+    {
+        float size = settings != null
+            ? settings.StreamingCellSize
+            : GrassSettingsSO.DefaultStreamingCellSize;
+        return Mathf.Max(8f, size);
+    }
+
+    private static Vector2Int WorldToGrassCellCoord(Vector3 worldPosition, float grassCellSize)
+    {
+        return new Vector2Int(
+            Mathf.FloorToInt(worldPosition.x / grassCellSize),
+            Mathf.FloorToInt(worldPosition.z / grassCellSize));
+    }
+
+    private static int GetGrassCellDistanceSqr(Vector2Int coord, Vector2Int origin)
+    {
+        int dx = coord.x - origin.x;
+        int dy = coord.y - origin.y;
+        return dx * dx + dy * dy;
+    }
+
+    private static float2 GrassCellOrigin(Vector2Int coord, float grassCellSize)
+    {
+        return new float2(coord.x * grassCellSize, coord.y * grassCellSize);
     }
 
     private GrassBuildSettings CreateGrassBuildSettings()
@@ -324,6 +809,7 @@ public partial class InfinitMeshTerrain
 
     private void DestroyGrassRuntimeResources()
     {
+        ClearGrassRuntimeCells();
         ClearGrassFromRuntimeChunks();
 
         if (runtimeGrassMesh != null)
@@ -366,6 +852,243 @@ public partial class InfinitMeshTerrain
             }
 
             runtimeDefaultGrassSettings = null;
+        }
+    }
+
+    private sealed class GrassCell : IDisposable
+    {
+        private ComputeBuffer grassInstanceBuffer;
+        private ComputeBuffer grassArgsBuffer;
+        private MaterialPropertyBlock grassPropertyBlock;
+        private Bounds grassBounds;
+        private int grassInstanceCount;
+        private int pendingGrassUploadCount;
+        private int pendingGrassUploadOffset;
+        private uint grassArgsIndexCount;
+        private uint grassArgsStartIndex;
+        private uint grassArgsBaseVertex;
+        private bool grassArgsDirty = true;
+        private bool grassBuilt;
+        private NativeArray<GrassInstanceData> pendingGrassUpload;
+
+        public GrassCell(Vector2Int coord)
+        {
+            Coord = coord;
+        }
+
+        public Vector2Int Coord { get; }
+        public bool HasPendingGrassUpload => pendingGrassUpload.IsCreated;
+        public bool HasGrassBuild => grassBuilt;
+        public bool HasGrass => grassBuilt && grassInstanceBuffer != null && grassInstanceCount > 0;
+
+        public void Apply(GrassBuildTask task)
+        {
+            DisposePendingGrassUpload();
+
+            if (!task.HasGrassInstances)
+            {
+                ApplyEmpty();
+                return;
+            }
+
+            int instanceCount = Mathf.Clamp(task.GrassInstanceCounter[0], 0, task.GrassInstances.Length);
+            grassBuilt = true;
+            grassInstanceCount = 0;
+            grassArgsDirty = true;
+
+            if (instanceCount == 0)
+            {
+                ReleaseGrassRenderData();
+                return;
+            }
+
+            if (grassInstanceBuffer == null || grassInstanceBuffer.count < instanceCount)
+            {
+                ReleaseGrassInstanceBuffer();
+                grassInstanceBuffer = new ComputeBuffer(instanceCount, GrassInstanceStride, ComputeBufferType.Structured);
+            }
+
+            pendingGrassUpload = new NativeArray<GrassInstanceData>(instanceCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            NativeArray<GrassInstanceData>.Copy(task.GrassInstances, pendingGrassUpload, instanceCount);
+            pendingGrassUploadCount = instanceCount;
+            pendingGrassUploadOffset = 0;
+            grassBounds = ToBounds(task.GrassBounds[0]);
+        }
+
+        public void ApplyEmpty()
+        {
+            grassBuilt = true;
+            ReleaseGrassRenderData();
+        }
+
+        public int UploadPendingGrass(int maxInstanceCount)
+        {
+            if (!pendingGrassUpload.IsCreated || grassInstanceBuffer == null || maxInstanceCount <= 0)
+            {
+                return 0;
+            }
+
+            int remainingCount = pendingGrassUploadCount - pendingGrassUploadOffset;
+            int uploadCount = Mathf.Min(maxInstanceCount, remainingCount);
+            if (uploadCount <= 0)
+            {
+                CompletePendingGrassUpload();
+                return 0;
+            }
+
+            grassInstanceBuffer.SetData(pendingGrassUpload, pendingGrassUploadOffset, pendingGrassUploadOffset, uploadCount);
+            pendingGrassUploadOffset += uploadCount;
+
+            if (pendingGrassUploadOffset >= pendingGrassUploadCount)
+            {
+                CompletePendingGrassUpload();
+            }
+
+            return uploadCount;
+        }
+
+        public void DrawGrass(
+            Mesh drawMesh,
+            Material drawMaterial,
+            Vector3 viewerPosition,
+            Vector4 fadeDistances,
+            Vector4 wind,
+            Vector4 meshGrounding,
+            ShadowCastingMode shadowCastingMode,
+            bool receiveShadows,
+            int layer)
+        {
+            if (!HasGrass || drawMesh == null || drawMaterial == null)
+            {
+                return;
+            }
+
+            EnsureGrassArgsBuffer(drawMesh);
+
+            grassPropertyBlock ??= new MaterialPropertyBlock();
+            grassPropertyBlock.Clear();
+            grassPropertyBlock.SetBuffer(GrassInstancesPropertyId, grassInstanceBuffer);
+            grassPropertyBlock.SetVector(GrassViewerPositionPropertyId, viewerPosition);
+            grassPropertyBlock.SetVector(GrassFadeDistancesPropertyId, fadeDistances);
+            grassPropertyBlock.SetVector(GrassWindPropertyId, wind);
+            grassPropertyBlock.SetVector(GrassMeshGroundingPropertyId, meshGrounding);
+
+            Graphics.DrawMeshInstancedIndirect(
+                drawMesh,
+                0,
+                drawMaterial,
+                grassBounds,
+                grassArgsBuffer,
+                0,
+                grassPropertyBlock,
+                shadowCastingMode,
+                receiveShadows,
+                layer);
+        }
+
+        public void ClearGrass()
+        {
+            grassBuilt = false;
+            ReleaseGrassRenderData();
+        }
+
+        public void Dispose()
+        {
+            ClearGrass();
+        }
+
+        private void ReleaseGrassRenderData()
+        {
+            grassInstanceCount = 0;
+            grassArgsDirty = true;
+            DisposePendingGrassUpload();
+            ReleaseGrassInstanceBuffer();
+            ReleaseGrassArgsBuffer();
+        }
+
+        private void CompletePendingGrassUpload()
+        {
+            grassInstanceCount = pendingGrassUploadCount;
+            grassArgsDirty = true;
+            DisposePendingGrassUpload();
+        }
+
+        private void DisposePendingGrassUpload()
+        {
+            if (pendingGrassUpload.IsCreated)
+            {
+                pendingGrassUpload.Dispose();
+            }
+
+            pendingGrassUploadCount = 0;
+            pendingGrassUploadOffset = 0;
+        }
+
+        private void EnsureGrassArgsBuffer(Mesh drawMesh)
+        {
+            uint indexCount = drawMesh.GetIndexCount(0);
+            uint startIndex = drawMesh.GetIndexStart(0);
+            uint baseVertex = (uint)drawMesh.GetBaseVertex(0);
+
+            if (grassArgsBuffer == null)
+            {
+                grassArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
+                grassArgsDirty = true;
+            }
+
+            if (!grassArgsDirty
+                && grassArgsIndexCount == indexCount
+                && grassArgsStartIndex == startIndex
+                && grassArgsBaseVertex == baseVertex)
+            {
+                return;
+            }
+
+            uint[] args =
+            {
+                indexCount,
+                (uint)grassInstanceCount,
+                startIndex,
+                baseVertex,
+                0u
+            };
+
+            grassArgsBuffer.SetData(args);
+            grassArgsIndexCount = indexCount;
+            grassArgsStartIndex = startIndex;
+            grassArgsBaseVertex = baseVertex;
+            grassArgsDirty = false;
+        }
+
+        private void ReleaseGrassInstanceBuffer()
+        {
+            if (grassInstanceBuffer == null)
+            {
+                return;
+            }
+
+            grassInstanceBuffer.Release();
+            grassInstanceBuffer = null;
+        }
+
+        private void ReleaseGrassArgsBuffer()
+        {
+            if (grassArgsBuffer == null)
+            {
+                return;
+            }
+
+            grassArgsBuffer.Release();
+            grassArgsBuffer = null;
+        }
+
+        private static Bounds ToBounds(GrassChunkBounds source)
+        {
+            Vector3 min = new Vector3(source.Min.x, source.Min.y, source.Min.z);
+            Vector3 max = new Vector3(source.Max.x, source.Max.y, source.Max.z);
+            Bounds bounds = new Bounds((min + max) * 0.5f, max - min);
+            bounds.Expand(2f);
+            return bounds;
         }
     }
 
@@ -727,15 +1450,23 @@ public partial class InfinitMeshTerrain
         private MaterialPropertyBlock grassPropertyBlock;
         private Bounds grassBounds;
         private int grassInstanceCount;
+        private int pendingGrassUploadCount;
+        private int pendingGrassUploadOffset;
         private uint grassArgsIndexCount;
         private uint grassArgsStartIndex;
         private uint grassArgsBaseVertex;
         private bool grassArgsDirty = true;
+        private bool grassBuilt;
+        private NativeArray<GrassInstanceData> pendingGrassUpload;
 
-        public bool HasGrass => grassInstanceBuffer != null && grassInstanceCount > 0;
+        public bool HasPendingGrassUpload => pendingGrassUpload.IsCreated;
+        public bool HasGrassBuild => grassBuilt;
+        public bool HasGrass => grassBuilt && grassInstanceBuffer != null && grassInstanceCount > 0;
 
         public void ApplyGrass(TerrainBuildTask task)
         {
+            DisposePendingGrassUpload();
+
             if (!task.HasGrassInstances)
             {
                 ClearGrass();
@@ -743,9 +1474,13 @@ public partial class InfinitMeshTerrain
             }
 
             int instanceCount = Mathf.Clamp(task.GrassInstanceCounter[0], 0, task.GrassInstances.Length);
+            grassBuilt = true;
+            grassInstanceCount = 0;
+            grassArgsDirty = true;
+
             if (instanceCount == 0)
             {
-                ClearGrass();
+                ReleaseGrassRenderData();
                 return;
             }
 
@@ -755,18 +1490,70 @@ public partial class InfinitMeshTerrain
                 grassInstanceBuffer = new ComputeBuffer(instanceCount, GrassInstanceStride, ComputeBufferType.Structured);
             }
 
-            grassInstanceBuffer.SetData(task.GrassInstances, 0, 0, instanceCount);
-            grassInstanceCount = instanceCount;
+            pendingGrassUpload = new NativeArray<GrassInstanceData>(instanceCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            NativeArray<GrassInstanceData>.Copy(task.GrassInstances, pendingGrassUpload, instanceCount);
+            pendingGrassUploadCount = instanceCount;
+            pendingGrassUploadOffset = 0;
             grassBounds = ToBounds(task.GrassBounds[0]);
-            grassArgsDirty = true;
+        }
+
+        public int UploadPendingGrass(int maxInstanceCount)
+        {
+            if (!pendingGrassUpload.IsCreated || grassInstanceBuffer == null || maxInstanceCount <= 0)
+            {
+                return 0;
+            }
+
+            int remainingCount = pendingGrassUploadCount - pendingGrassUploadOffset;
+            int uploadCount = Mathf.Min(maxInstanceCount, remainingCount);
+            if (uploadCount <= 0)
+            {
+                CompletePendingGrassUpload();
+                return 0;
+            }
+
+            grassInstanceBuffer.SetData(pendingGrassUpload, pendingGrassUploadOffset, pendingGrassUploadOffset, uploadCount);
+            pendingGrassUploadOffset += uploadCount;
+
+            if (pendingGrassUploadOffset >= pendingGrassUploadCount)
+            {
+                CompletePendingGrassUpload();
+            }
+
+            return uploadCount;
         }
 
         public void ClearGrass()
         {
+            grassBuilt = false;
+            ReleaseGrassRenderData();
+        }
+
+        private void ReleaseGrassRenderData()
+        {
             grassInstanceCount = 0;
             grassArgsDirty = true;
+            DisposePendingGrassUpload();
             ReleaseGrassInstanceBuffer();
             ReleaseGrassArgsBuffer();
+        }
+
+        private void CompletePendingGrassUpload()
+        {
+            grassInstanceCount = pendingGrassUploadCount;
+            grassArgsDirty = true;
+            DisposePendingGrassUpload();
+        }
+
+        private void DisposePendingGrassUpload()
+        {
+            if (pendingGrassUpload.IsCreated)
+            {
+                pendingGrassUpload.Dispose();
+            }
+
+            pendingGrassUploadCount = 0;
+            pendingGrassUploadOffset = 0;
         }
 
         public void DrawGrass(
