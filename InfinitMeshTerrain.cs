@@ -61,6 +61,18 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         Shader.PropertyToID("_Layer8NormalScale")
     };
 
+    private static readonly int[] LayerSmoothnessPropertyIds =
+    {
+        Shader.PropertyToID("_Layer1Smoothness"),
+        Shader.PropertyToID("_Layer2Smoothness"),
+        Shader.PropertyToID("_Layer3Smoothness"),
+        Shader.PropertyToID("_Layer4Smoothness"),
+        Shader.PropertyToID("_Layer5Smoothness"),
+        Shader.PropertyToID("_Layer6Smoothness"),
+        Shader.PropertyToID("_Layer7Smoothness"),
+        Shader.PropertyToID("_Layer8Smoothness")
+    };
+
     private static readonly int[] LayerColorPropertyIds =
     {
         Shader.PropertyToID("_Layer1Color"),

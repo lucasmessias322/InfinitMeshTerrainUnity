@@ -14,14 +14,14 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
         [NoScaleOffset] _Texture2D_B2("Layer 7 Albedo (Map1 B)", 2D) = "white" {}
         [NoScaleOffset] _Texture2D_A2("Layer 8 Albedo (Map1 A)", 2D) = "white" {}
 
-        _Layer1TextureScale("Layer 1 Texture Scale", Float) = 1
-        _Layer2TextureScale("Layer 2 Texture Scale", Float) = 1
-        _Layer3TextureScale("Layer 3 Texture Scale", Float) = 1
-        _Layer4TextureScale("Layer 4 Texture Scale", Float) = 1
-        _Layer5TextureScale("Layer 5 Texture Scale", Float) = 1
-        _Layer6TextureScale("Layer 6 Texture Scale", Float) = 1
-        _Layer7TextureScale("Layer 7 Texture Scale", Float) = 1
-        _Layer8TextureScale("Layer 8 Texture Scale", Float) = 1
+        _Layer1TextureScale("Layer 1 Texture Scale (X/Y)", Vector) = (1, 1, 0, 0)
+        _Layer2TextureScale("Layer 2 Texture Scale (X/Y)", Vector) = (1, 1, 0, 0)
+        _Layer3TextureScale("Layer 3 Texture Scale (X/Y)", Vector) = (1, 1, 0, 0)
+        _Layer4TextureScale("Layer 4 Texture Scale (X/Y)", Vector) = (1, 1, 0, 0)
+        _Layer5TextureScale("Layer 5 Texture Scale (X/Y)", Vector) = (1, 1, 0, 0)
+        _Layer6TextureScale("Layer 6 Texture Scale (X/Y)", Vector) = (1, 1, 0, 0)
+        _Layer7TextureScale("Layer 7 Texture Scale (X/Y)", Vector) = (1, 1, 0, 0)
+        _Layer8TextureScale("Layer 8 Texture Scale (X/Y)", Vector) = (1, 1, 0, 0)
 
         _Layer1Color("Layer 1 Color", Color) = (1, 1, 1, 1)
         _Layer2Color("Layer 2 Color", Color) = (1, 1, 1, 1)
@@ -49,6 +49,15 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
         _Layer6NormalScale("Layer 6 Normal Scale", Range(0, 4)) = 1
         _Layer7NormalScale("Layer 7 Normal Scale", Range(0, 4)) = 1
         _Layer8NormalScale("Layer 8 Normal Scale", Range(0, 4)) = 1
+
+        _Layer1Smoothness("Layer 1 Smoothness", Range(0, 1)) = 0
+        _Layer2Smoothness("Layer 2 Smoothness", Range(0, 1)) = 0
+        _Layer3Smoothness("Layer 3 Smoothness", Range(0, 1)) = 0
+        _Layer4Smoothness("Layer 4 Smoothness", Range(0, 1)) = 0
+        _Layer5Smoothness("Layer 5 Smoothness", Range(0, 1)) = 0
+        _Layer6Smoothness("Layer 6 Smoothness", Range(0, 1)) = 0
+        _Layer7Smoothness("Layer 7 Smoothness", Range(0, 1)) = 0
+        _Layer8Smoothness("Layer 8 Smoothness", Range(0, 1)) = 0
 
         _Metallic("Metallic", Range(0, 1)) = 0
         _Smoothness("Smoothness", Range(0, 1)) = 0
@@ -107,14 +116,14 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
             half4 _Layer7Color;
             half4 _Layer8Color;
 
-            half _Layer1TextureScale;
-            half _Layer2TextureScale;
-            half _Layer3TextureScale;
-            half _Layer4TextureScale;
-            half _Layer5TextureScale;
-            half _Layer6TextureScale;
-            half _Layer7TextureScale;
-            half _Layer8TextureScale;
+            float4 _Layer1TextureScale;
+            float4 _Layer2TextureScale;
+            float4 _Layer3TextureScale;
+            float4 _Layer4TextureScale;
+            float4 _Layer5TextureScale;
+            float4 _Layer6TextureScale;
+            float4 _Layer7TextureScale;
+            float4 _Layer8TextureScale;
 
             half _Layer1NormalScale;
             half _Layer2NormalScale;
@@ -124,6 +133,15 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
             half _Layer6NormalScale;
             half _Layer7NormalScale;
             half _Layer8NormalScale;
+
+            half _Layer1Smoothness;
+            half _Layer2Smoothness;
+            half _Layer3Smoothness;
+            half _Layer4Smoothness;
+            half _Layer5Smoothness;
+            half _Layer6Smoothness;
+            half _Layer7Smoothness;
+            half _Layer8Smoothness;
 
             half _Metallic;
             half _Smoothness;
@@ -158,9 +176,9 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
             UNITY_VERTEX_OUTPUT_STEREO
         };
 
-        float2 TerrainLayerUV(float2 uv, half textureScale)
+        float2 TerrainLayerUV(float2 uv, float4 textureScale)
         {
-            return uv * max(textureScale, half(0.001));
+            return uv * max(textureScale.xy, float2(0.001, 0.001));
         }
 
         half3 ApplyTerrainNormalStrength(half3 normalTS, half strength)
@@ -186,12 +204,12 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
             return weights;
         }
 
-        half3 SampleLayerAlbedo(TEXTURE2D_PARAM(layerTexture, layerSampler), float2 uv, half textureScale, half4 tint)
+        half3 SampleLayerAlbedo(TEXTURE2D_PARAM(layerTexture, layerSampler), float2 uv, float4 textureScale, half4 tint)
         {
             return SAMPLE_TEXTURE2D(layerTexture, layerSampler, TerrainLayerUV(uv, textureScale)).rgb * tint.rgb;
         }
 
-        half3 SampleLayerNormal(TEXTURE2D_PARAM(normalTexture, normalSampler), float2 uv, half textureScale, half normalScale)
+        half3 SampleLayerNormal(TEXTURE2D_PARAM(normalTexture, normalSampler), float2 uv, float4 textureScale, half normalScale)
         {
             half3 normalTS = UnpackNormal(SAMPLE_TEXTURE2D(normalTexture, normalSampler, TerrainLayerUV(uv, textureScale)));
             return ApplyTerrainNormalStrength(normalTS, normalScale);
@@ -228,6 +246,20 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
                 : half3(0.0, 0.0, 1.0);
         }
 
+        half BlendTerrainSmoothness(TerrainWeights weights)
+        {
+            half smoothness = half(0.0);
+            smoothness += _Layer1Smoothness * weights.map0.r;
+            smoothness += _Layer2Smoothness * weights.map0.g;
+            smoothness += _Layer3Smoothness * weights.map0.b;
+            smoothness += _Layer4Smoothness * weights.map0.a;
+            smoothness += _Layer5Smoothness * weights.map1.r;
+            smoothness += _Layer6Smoothness * weights.map1.g;
+            smoothness += _Layer7Smoothness * weights.map1.b;
+            smoothness += _Layer8Smoothness * weights.map1.a;
+            return saturate(smoothness + _Smoothness);
+        }
+
         SurfaceData BuildTerrainSurfaceData(float2 uv)
         {
             TerrainWeights weights = SampleTerrainWeights(uv);
@@ -236,7 +268,7 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
             surfaceData.albedo = BlendTerrainAlbedo(uv, weights);
             surfaceData.specular = half3(0.0, 0.0, 0.0);
             surfaceData.metallic = _Metallic;
-            surfaceData.smoothness = _Smoothness;
+            surfaceData.smoothness = BlendTerrainSmoothness(weights);
             surfaceData.normalTS = BlendTerrainNormals(uv, weights);
             surfaceData.emission = half3(0.0, 0.0, 0.0);
             surfaceData.occlusion = _Occlusion;
@@ -253,15 +285,15 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
 
             if (dot(tangent, tangent) <= half(0.00001))
             {
-                tangent = half3(1.0, 0.0, 0.0) - normalWS * dot(normalWS, half3(1.0, 0.0, 0.0));
+                tangent = cross(half3(0.0, 0.0, 1.0), normalWS);
 
                 if (dot(tangent, tangent) <= half(0.00001))
                 {
-                    tangent = half3(0.0, 0.0, 1.0) - normalWS * dot(normalWS, half3(0.0, 0.0, 1.0));
+                    tangent = half3(1.0, 0.0, 0.0) - normalWS * dot(normalWS, half3(1.0, 0.0, 0.0));
                 }
 
-                tangent = normalize(tangent);
-                tangentSign = half(-1.0);
+                tangent = -normalize(tangent);
+                tangentSign = half(1.0);
             }
             else
             {

@@ -237,10 +237,12 @@ public partial class InfinitMeshTerrain
                     propertyBlock.SetTexture(LayerTexturePropertyIds[channelIndex], layer.texture);
                 }
 
-                propertyBlock.SetFloat(LayerTextureScalePropertyIds[channelIndex], NormalizeLayerTextureScale(layer.textureScale));
+                Vector2 textureScale = NormalizeLayerTextureScale(layer.textureScale);
+                propertyBlock.SetVector(LayerTextureScalePropertyIds[channelIndex], new Vector4(textureScale.x, textureScale.y, 0f, 0f));
                 Texture normalTexture = layer.normalTexture != null ? layer.normalTexture : Texture2D.normalTexture;
                 propertyBlock.SetTexture(LayerNormalTexturePropertyIds[channelIndex], normalTexture);
                 propertyBlock.SetFloat(LayerNormalScalePropertyIds[channelIndex], NormalizeLayerNormalScale(layer.normalScale));
+                propertyBlock.SetFloat(LayerSmoothnessPropertyIds[channelIndex], NormalizeLayerSmoothness(layer.smoothness));
                 propertyBlock.SetColor(LayerColorPropertyIds[channelIndex], NormalizeLayerColor(layer.color));
             }
         }

@@ -36,6 +36,7 @@ public partial class InfinitMeshTerrain
             layer.color = NormalizeLayerColor(layer.color);
             layer.textureScale = NormalizeLayerTextureScale(layer.textureScale);
             layer.normalScale = NormalizeLayerNormalScale(layer.normalScale);
+            layer.smoothness = NormalizeLayerSmoothness(layer.smoothness);
             terrainLayers[i] = layer;
         }
     }
@@ -45,14 +46,26 @@ public partial class InfinitMeshTerrain
         return color.a <= 0f && color.maxColorComponent <= 0f ? Color.white : color;
     }
 
-    private static float NormalizeLayerTextureScale(float textureScale)
+    private static Vector2 NormalizeLayerTextureScale(Vector2 textureScale)
     {
-        return textureScale <= 0f ? 1f : Mathf.Max(0.001f, textureScale);
+        if (textureScale == Vector2.zero)
+        {
+            return Vector2.one;
+        }
+
+        return new Vector2(
+            Mathf.Max(0.001f, textureScale.x),
+            Mathf.Max(0.001f, textureScale.y));
     }
 
     private static float NormalizeLayerNormalScale(float normalScale)
     {
-        return normalScale <= 0f ? 1f : Mathf.Clamp(normalScale, 0.001f, 4f);
+        return Mathf.Clamp(normalScale, 0f, 4f);
+    }
+
+    private static float NormalizeLayerSmoothness(float smoothness)
+    {
+        return Mathf.Clamp01(smoothness);
     }
 
     private SlopeTextureSettings CreateSlopeTextureSettings()
