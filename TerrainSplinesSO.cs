@@ -1,6 +1,7 @@
+using System;
 using UnityEngine;
 
-[CreateAssetMenu(fileName = "TerrainSplines", menuName = "Procedural Terrain/Terrain Splines")]
+[Obsolete("Legacy terrain splines are no longer used by InfinitMeshTerrain.")]
 public sealed class TerrainSplinesSO : ScriptableObject
 {
     public const int SampleCount = 128;
@@ -8,12 +9,6 @@ public sealed class TerrainSplinesSO : ScriptableObject
     [Header("Height Mapping")]
     [SerializeField] private AnimationCurve continentalnessHeight = DefaultContinentalnessHeight();
     [SerializeField] private AnimationCurve erosionMultiplier = DefaultErosionMultiplier();
-
-    [Header("Feature Mapping")]
-    [SerializeField] private AnimationCurve hillsStrength = DefaultHillsStrength();
-    [SerializeField] private AnimationCurve peaksValleysOffset = DefaultPeaksValleysOffset();
-    [SerializeField] private AnimationCurve mountainStrength = DefaultMountainStrength();
-    [SerializeField] private AnimationCurve detailStrength = DefaultDetailStrength();
 
     public float Evaluate(TerrainSplineChannel channel, float input)
     {
@@ -25,10 +20,6 @@ public sealed class TerrainSplinesSO : ScriptableObject
     {
         EnsureCurve(ref continentalnessHeight, DefaultContinentalnessHeight());
         EnsureCurve(ref erosionMultiplier, DefaultErosionMultiplier());
-        EnsureCurve(ref hillsStrength, DefaultHillsStrength());
-        EnsureCurve(ref peaksValleysOffset, DefaultPeaksValleysOffset());
-        EnsureCurve(ref mountainStrength, DefaultMountainStrength());
-        EnsureCurve(ref detailStrength, DefaultDetailStrength());
     }
 
     private static void EnsureCurve(ref AnimationCurve curve, AnimationCurve fallback)
@@ -57,14 +48,6 @@ public sealed class TerrainSplinesSO : ScriptableObject
                 return continentalnessHeight;
             case TerrainSplineChannel.ErosionMultiplier:
                 return erosionMultiplier;
-            case TerrainSplineChannel.HillsStrength:
-                return hillsStrength;
-            case TerrainSplineChannel.PeaksValleysOffset:
-                return peaksValleysOffset;
-            case TerrainSplineChannel.MountainStrength:
-                return mountainStrength;
-            case TerrainSplineChannel.DetailStrength:
-                return detailStrength;
             default:
                 return continentalnessHeight;
         }
@@ -90,44 +73,6 @@ public sealed class TerrainSplinesSO : ScriptableObject
             new Keyframe(1f, 0.18f));
     }
 
-    private static AnimationCurve DefaultHillsStrength()
-    {
-        return CreateCurve(
-            new Keyframe(0f, 0.15f),
-            new Keyframe(0.35f, 0.45f),
-            new Keyframe(0.7f, 1f),
-            new Keyframe(1f, 0.7f));
-    }
-
-    private static AnimationCurve DefaultPeaksValleysOffset()
-    {
-        return CreateCurve(
-            new Keyframe(0f, -0.06f),
-            new Keyframe(0.32f, -0.02f),
-            new Keyframe(0.5f, 0f),
-            new Keyframe(0.76f, 0.035f),
-            new Keyframe(1f, 0.08f));
-    }
-
-    private static AnimationCurve DefaultMountainStrength()
-    {
-        return CreateCurve(
-            new Keyframe(0f, 0f),
-            new Keyframe(0.45f, 0f),
-            new Keyframe(0.65f, 0.22f),
-            new Keyframe(0.85f, 0.62f),
-            new Keyframe(1f, 0.88f));
-    }
-
-    private static AnimationCurve DefaultDetailStrength()
-    {
-        return CreateCurve(
-            new Keyframe(0f, 0.25f),
-            new Keyframe(0.35f, 0.4f),
-            new Keyframe(0.65f, 0.8f),
-            new Keyframe(1f, 1f));
-    }
-
     private static AnimationCurve CreateCurve(params Keyframe[] keys)
     {
         AnimationCurve curve = new AnimationCurve(keys)
@@ -144,9 +89,5 @@ public enum TerrainSplineChannel
 {
     ContinentalnessHeight,
     ErosionMultiplier,
-    HillsStrength,
-    PeaksValleysOffset,
-    MountainStrength,
-    DetailStrength,
     Count
 }

@@ -60,12 +60,8 @@ public partial class InfinitMeshTerrain
             surfaceIndexCount,
             skirtIndexCount,
             baseVertexCount,
-            GetNoiseLayerCount(),
-            GetTerrainSplineSampleCount(),
             grassInstanceCapacity,
             grassTerrainLayerCount);
-        CopyNoiseLayers(task.NoiseLayers);
-        CopyTerrainSplineSamples(task.TerrainSplineSamples);
         CopyGrassTerrainLayers(task.GrassTerrainLayers);
 
         TerrainSettings settings = CreateTerrainSettings();
@@ -75,8 +71,6 @@ public partial class InfinitMeshTerrain
             Vertices = task.Vertices,
             Normals = task.Normals,
             Uvs = task.Uvs,
-            NoiseLayers = task.NoiseLayers,
-            TerrainSplineSamples = task.TerrainSplineSamples,
             Settings = settings,
             ChunkOrigin = new float2(coord.x * chunkSize, coord.y * chunkSize),
             ChunkSize = chunkSize,

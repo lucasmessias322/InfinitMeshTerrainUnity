@@ -4,8 +4,6 @@ using UnityEngine;
 [DisallowMultipleComponent]
 public partial class InfinitMeshTerrain : MonoBehaviour
 {
-    private const int TerrainSplineSampleCount = TerrainSplinesSO.SampleCount;
-    private const int TerrainSplineChannelCount = (int)TerrainSplineChannel.Count;
     private const int SplatMapCount = 2;
     private const int SplatMapChannelCount = 4;
     private const int MaxTerrainLayerCount = SplatMapCount * SplatMapChannelCount;

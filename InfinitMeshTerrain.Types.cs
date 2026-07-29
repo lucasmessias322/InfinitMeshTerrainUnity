@@ -104,36 +104,7 @@ public partial class InfinitMeshTerrain
     {
         public float2 NoiseOffset;
         public int TerrainSeed;
-        public float ContinentFrequency;
-        public float DomainWarpFrequency;
-        public float DomainWarpStrength;
-        public float BiomeFrequency;
-        public float RidgeFrequency;
-        public float DetailFrequency;
-        public float SeaCoverage;
-        public float MountainStart;
-        public float PlainsStrength;
-        public float HillsStrength;
-        public float MountainStrength;
-        public float CliffStrength;
-        public float DetailStrength;
-        public float TerraceStrength;
-        public int TerraceSteps;
-        public float TerrainSplineInfluence;
-        public float NoiseLayerInfluence;
-    }
-
-    private struct NoiseLayerData
-    {
-        public float2 Scale;
-        public float Amplitude;
-        public int Role;
-        public int Octaves;
-        public float Lacunarity;
-        public float Gain;
-        public float HeightThreshold;
-        public float2 Offset;
-        public float BlendRange;
+        public float NoiseFrequency;
     }
 
     private struct GrassInstanceData

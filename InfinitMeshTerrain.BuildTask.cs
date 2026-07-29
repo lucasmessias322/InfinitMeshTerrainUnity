@@ -16,8 +16,6 @@ public partial class InfinitMeshTerrain
             int surfaceIndexCount,
             int skirtIndexCount,
             int baseVertexCount,
-            int noiseLayerCount,
-            int terrainSplineSampleCount,
             int grassInstanceCapacity,
             int grassTerrainLayerCount)
         {
@@ -32,8 +30,6 @@ public partial class InfinitMeshTerrain
             Normals = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Uvs = new NativeArray<Vector2>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Indices = new NativeArray<int>(indexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            NoiseLayers = new NativeArray<NoiseLayerData>(Mathf.Max(0, noiseLayerCount), Allocator.Persistent);
-            TerrainSplineSamples = new NativeArray<float>(Mathf.Max(0, terrainSplineSampleCount), Allocator.Persistent);
             if (grassInstanceCapacity > 0)
             {
                 GrassInstances = new NativeArray<GrassInstanceData>(grassInstanceCapacity, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -55,8 +51,6 @@ public partial class InfinitMeshTerrain
         public NativeArray<Vector3> Normals;
         public NativeArray<Vector2> Uvs;
         public NativeArray<int> Indices;
-        public NativeArray<NoiseLayerData> NoiseLayers;
-        public NativeArray<float> TerrainSplineSamples;
         public NativeArray<GrassInstanceData> GrassInstances;
         public NativeArray<int> GrassInstanceCounter;
         public NativeArray<GrassChunkBounds> GrassBounds;
@@ -86,16 +80,6 @@ public partial class InfinitMeshTerrain
             if (Indices.IsCreated)
             {
                 Indices.Dispose();
-            }
-
-            if (NoiseLayers.IsCreated)
-            {
-                NoiseLayers.Dispose();
-            }
-
-            if (TerrainSplineSamples.IsCreated)
-            {
-                TerrainSplineSamples.Dispose();
             }
 
             if (GrassInstances.IsCreated)
