@@ -48,6 +48,8 @@ public partial class InfinitMeshTerrain
         int surfaceIndexCount = baseQuadCount * 6;
         int skirtIndexCount = skirtQuadCount * 6;
         int indexCount = surfaceIndexCount + skirtIndexCount;
+        int heightLayerCount = GetTerrainHeightLayerCount();
+        int heightSplineSampleCount = GetTerrainSplineSampleCount();
         int grassInstanceCapacity = ShouldBuildGrassForChunk(coord) ? CalculateGrassInstanceCapacity() : 0;
         int grassTerrainLayerCount = grassInstanceCapacity > 0 ? GetGrassTerrainLayerCount() : 0;
 
@@ -60,8 +62,11 @@ public partial class InfinitMeshTerrain
             surfaceIndexCount,
             skirtIndexCount,
             baseVertexCount,
+            heightLayerCount,
+            heightSplineSampleCount,
             grassInstanceCapacity,
             grassTerrainLayerCount);
+        CopyTerrainHeightLayers(task.HeightLayers, task.HeightSplineSamples);
         CopyGrassTerrainLayers(task.GrassTerrainLayers);
 
         TerrainSettings settings = CreateTerrainSettings();
@@ -72,9 +77,11 @@ public partial class InfinitMeshTerrain
             Normals = task.Normals,
             Uvs = task.Uvs,
             Settings = settings,
+            HeightLayers = task.HeightLayers,
+            HeightSplineSamples = task.HeightSplineSamples,
+            HeightLayerCount = task.HeightLayers.IsCreated ? task.HeightLayers.Length : 0,
             ChunkOrigin = new float2(coord.x * chunkSize, coord.y * chunkSize),
             ChunkSize = chunkSize,
-            HeightMultiplier = GetTerrainHeightMultiplier(),
             SkirtDepth = skirtDepth,
             Resolution = resolution,
             BaseVertexCount = baseVertexCount,

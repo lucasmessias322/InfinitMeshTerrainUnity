@@ -16,6 +16,8 @@ public partial class InfinitMeshTerrain
             int surfaceIndexCount,
             int skirtIndexCount,
             int baseVertexCount,
+            int heightLayerCount,
+            int heightSplineSampleCount,
             int grassInstanceCapacity,
             int grassTerrainLayerCount)
         {
@@ -30,6 +32,16 @@ public partial class InfinitMeshTerrain
             Normals = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Uvs = new NativeArray<Vector2>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Indices = new NativeArray<int>(indexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            if (heightLayerCount > 0)
+            {
+                HeightLayers = new NativeArray<TerrainHeightNoiseLayerData>(heightLayerCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            }
+
+            if (heightSplineSampleCount > 0)
+            {
+                HeightSplineSamples = new NativeArray<float>(heightSplineSampleCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            }
+
             if (grassInstanceCapacity > 0)
             {
                 GrassInstances = new NativeArray<GrassInstanceData>(grassInstanceCapacity, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -51,6 +63,8 @@ public partial class InfinitMeshTerrain
         public NativeArray<Vector3> Normals;
         public NativeArray<Vector2> Uvs;
         public NativeArray<int> Indices;
+        public NativeArray<TerrainHeightNoiseLayerData> HeightLayers;
+        public NativeArray<float> HeightSplineSamples;
         public NativeArray<GrassInstanceData> GrassInstances;
         public NativeArray<int> GrassInstanceCounter;
         public NativeArray<GrassChunkBounds> GrassBounds;
@@ -80,6 +94,16 @@ public partial class InfinitMeshTerrain
             if (Indices.IsCreated)
             {
                 Indices.Dispose();
+            }
+
+            if (HeightLayers.IsCreated)
+            {
+                HeightLayers.Dispose();
+            }
+
+            if (HeightSplineSamples.IsCreated)
+            {
+                HeightSplineSamples.Dispose();
             }
 
             if (GrassInstances.IsCreated)

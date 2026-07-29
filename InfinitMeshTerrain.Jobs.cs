@@ -12,11 +12,13 @@ public partial class InfinitMeshTerrain
         [WriteOnly] public NativeArray<Vector3> Vertices;
         [WriteOnly] public NativeArray<Vector3> Normals;
         [WriteOnly] public NativeArray<Vector2> Uvs;
+        [ReadOnly] public NativeArray<TerrainHeightNoiseLayerData> HeightLayers;
+        [ReadOnly] public NativeArray<float> HeightSplineSamples;
 
         public TerrainSettings Settings;
+        public int HeightLayerCount;
         public float2 ChunkOrigin;
         public float ChunkSize;
-        public float HeightMultiplier;
         public float SkirtDepth;
         public int Resolution;
         public int BaseVertexCount;
@@ -128,9 +130,187 @@ public partial class InfinitMeshTerrain
 
         private float SampleHeight(float2 world)
         {
-            float2 seeded = world + Settings.NoiseOffset + new float2(Settings.TerrainSeed * 37.17f, Settings.TerrainSeed * -19.91f);
-            float normalizedHeight = To01(noise.snoise(seeded * Settings.NoiseFrequency));
-            return normalizedHeight * HeightMultiplier;
+            if (HeightLayerCount > 0)
+            {
+                float height = 0f;
+                int layerCount = math.min(HeightLayerCount, HeightLayers.Length);
+                for (int i = 0; i < layerCount; i++)
+                {
+                    TerrainHeightNoiseLayerData layer = HeightLayers[i];
+                    float contribution = SampleLayerContribution(world, layer, i);
+                    height = ApplyLayerOperation(height, contribution, layer.Operation);
+                }
+
+                return math.clamp(height, Settings.MinHeight, Settings.MaxHeight);
+            }
+
+            return Settings.MinHeight;
+        }
+
+        private float SampleLayerContribution(float2 world, TerrainHeightNoiseLayerData layer, int layerIndex)
+        {
+            float value = SampleLayerValue(world, layer, layerIndex);
+            float mask = EvaluateLayerMask(value, layer);
+            mask *= EvaluateMaskSpline(world, layer);
+            return value * mask * layer.Amplitude;
+        }
+
+        private float SampleLayerValue(float2 world, TerrainHeightNoiseLayerData layer, int layerIndex)
+        {
+            float value = SampleLayerNoise(world, layer, layerIndex);
+            return ApplySpline(value, layer);
+        }
+
+        private float SampleLayerNoise(float2 world, TerrainHeightNoiseLayerData layer, int layerIndex)
+        {
+            float2 seedOffset = Settings.NoiseOffset
+                + layer.Offset
+                + new float2(
+                    Settings.TerrainSeed * 37.17f + layerIndex * 101.31f,
+                    Settings.TerrainSeed * -19.91f + layerIndex * -73.57f);
+            float frequency = math.max(0.000001f, layer.Frequency);
+            float octaveAmplitude = 1f;
+            float total = 0f;
+            float weightSum = 0f;
+            int octaveCount = math.clamp(layer.Octaves, 1, 12);
+
+            for (int octave = 0; octave < octaveCount; octave++)
+            {
+                float raw = noise.snoise((world + seedOffset) * frequency);
+                total += ShapeNoise(raw, layer.NoiseShape) * octaveAmplitude;
+                weightSum += octaveAmplitude;
+                octaveAmplitude *= math.saturate(layer.Persistence);
+                frequency *= math.max(1f, layer.Lacunarity);
+            }
+
+            return weightSum > 0f ? total / weightSum : 0f;
+        }
+
+        private float ApplySpline(float value, TerrainHeightNoiseLayerData layer)
+        {
+            if (layer.SplineInfluence <= 0f || layer.SplineSampleOffset < 0 || layer.SplineSampleCount <= 1 || HeightSplineSamples.Length == 0)
+            {
+                return value;
+            }
+
+            float input = NormalizeSplineInput(value, layer.NoiseShape);
+            float splineValue = SampleSpline(input, layer.SplineSampleOffset, layer.SplineSampleCount);
+            return math.lerp(value, splineValue, math.saturate(layer.SplineInfluence));
+        }
+
+        private float EvaluateMaskSpline(float2 world, TerrainHeightNoiseLayerData layer)
+        {
+            if (layer.MaskSplineInfluence <= 0f
+                || layer.MaskSplineSampleOffset < 0
+                || layer.MaskSplineSampleCount <= 1
+                || layer.MaskSplineInputLayerIndex < 0
+                || layer.MaskSplineInputLayerIndex >= HeightLayerCount
+                || layer.MaskSplineInputLayerIndex >= HeightLayers.Length
+                || HeightSplineSamples.Length == 0)
+            {
+                return 1f;
+            }
+
+            TerrainHeightNoiseLayerData inputLayer = HeightLayers[layer.MaskSplineInputLayerIndex];
+            float inputValue = SampleLayerValue(world, inputLayer, layer.MaskSplineInputLayerIndex);
+            float input = NormalizeSplineInput(inputValue, inputLayer.NoiseShape);
+            float splineMask = SampleSpline(input, layer.MaskSplineSampleOffset, layer.MaskSplineSampleCount);
+            return math.max(0f, math.lerp(1f, splineMask, math.saturate(layer.MaskSplineInfluence)));
+        }
+
+        private float SampleSpline(float input, int sampleOffset, int sampleCount)
+        {
+            int availableCount = math.min(sampleCount, HeightSplineSamples.Length - sampleOffset);
+            if (sampleOffset < 0 || availableCount <= 0)
+            {
+                return input;
+            }
+
+            if (availableCount == 1)
+            {
+                return HeightSplineSamples[sampleOffset];
+            }
+
+            float samplePosition = math.saturate(input) * (availableCount - 1);
+            int index0 = (int)math.floor(samplePosition);
+            int index1 = math.min(index0 + 1, availableCount - 1);
+            float t = samplePosition - index0;
+            float value0 = HeightSplineSamples[sampleOffset + index0];
+            float value1 = HeightSplineSamples[sampleOffset + index1];
+            return math.lerp(value0, value1, t);
+        }
+
+        private static float NormalizeSplineInput(float value, int noiseShape)
+        {
+            return noiseShape == (int)TerrainHeightNoiseShape.Signed
+                ? To01(value)
+                : math.saturate(value);
+        }
+
+        private static float ShapeNoise(float value, int noiseShape)
+        {
+            if (noiseShape == (int)TerrainHeightNoiseShape.Signed)
+            {
+                return value;
+            }
+
+            if (noiseShape == (int)TerrainHeightNoiseShape.Ridged)
+            {
+                return math.saturate(1f - math.abs(value));
+            }
+
+            if (noiseShape == (int)TerrainHeightNoiseShape.Billow)
+            {
+                return math.saturate(math.abs(value));
+            }
+
+            return To01(value);
+        }
+
+        private static float EvaluateLayerMask(float value, TerrainHeightNoiseLayerData layer)
+        {
+            if (layer.Threshold <= 0f && layer.BlendRange <= 0f)
+            {
+                return 1f;
+            }
+
+            float compareValue = layer.NoiseShape == (int)TerrainHeightNoiseShape.Signed
+                ? To01(value)
+                : math.saturate(value);
+
+            if (layer.BlendRange <= 0.000001f)
+            {
+                return compareValue >= layer.Threshold ? 1f : 0f;
+            }
+
+            float blendEnd = math.min(1f, layer.Threshold + layer.BlendRange);
+            if (blendEnd <= layer.Threshold)
+            {
+                return compareValue >= layer.Threshold ? 1f : 0f;
+            }
+
+            float t = math.saturate((compareValue - layer.Threshold) / (blendEnd - layer.Threshold));
+            return t * t * (3f - 2f * t);
+        }
+
+        private static float ApplyLayerOperation(float height, float contribution, int operation)
+        {
+            if (operation == (int)TerrainHeightLayerOperation.Subtract)
+            {
+                return height - contribution;
+            }
+
+            if (operation == (int)TerrainHeightLayerOperation.Max)
+            {
+                return math.max(height, contribution);
+            }
+
+            if (operation == (int)TerrainHeightLayerOperation.Min)
+            {
+                return math.min(height, contribution);
+            }
+
+            return height + contribution;
         }
 
         private float3 EstimateNormal(float2 world)

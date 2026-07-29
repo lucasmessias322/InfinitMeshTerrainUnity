@@ -104,7 +104,29 @@ public partial class InfinitMeshTerrain
     {
         public float2 NoiseOffset;
         public int TerrainSeed;
-        public float NoiseFrequency;
+        public float MinHeight;
+        public float MaxHeight;
+    }
+
+    private struct TerrainHeightNoiseLayerData
+    {
+        public int Operation;
+        public int NoiseShape;
+        public float Frequency;
+        public float Amplitude;
+        public int Octaves;
+        public float Lacunarity;
+        public float Persistence;
+        public float2 Offset;
+        public float Threshold;
+        public float BlendRange;
+        public int SplineSampleOffset;
+        public int SplineSampleCount;
+        public float SplineInfluence;
+        public int MaskSplineSampleOffset;
+        public int MaskSplineSampleCount;
+        public int MaskSplineInputLayerIndex;
+        public float MaskSplineInfluence;
     }
 
     private struct GrassInstanceData
