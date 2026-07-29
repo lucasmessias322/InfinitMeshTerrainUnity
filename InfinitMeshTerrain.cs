@@ -25,6 +25,42 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         Shader.PropertyToID("_Texture2D_A2")
     };
 
+    private static readonly int[] LayerTextureScalePropertyIds =
+    {
+        Shader.PropertyToID("_Layer1TextureScale"),
+        Shader.PropertyToID("_Layer2TextureScale"),
+        Shader.PropertyToID("_Layer3TextureScale"),
+        Shader.PropertyToID("_Layer4TextureScale"),
+        Shader.PropertyToID("_Layer5TextureScale"),
+        Shader.PropertyToID("_Layer6TextureScale"),
+        Shader.PropertyToID("_Layer7TextureScale"),
+        Shader.PropertyToID("_Layer8TextureScale")
+    };
+
+    private static readonly int[] LayerNormalTexturePropertyIds =
+    {
+        Shader.PropertyToID("_Layer1Normal"),
+        Shader.PropertyToID("_Layer2Normal"),
+        Shader.PropertyToID("_Layer3Normal"),
+        Shader.PropertyToID("_Layer4Normal"),
+        Shader.PropertyToID("_Layer5Normal"),
+        Shader.PropertyToID("_Layer6Normal"),
+        Shader.PropertyToID("_Layer7Normal"),
+        Shader.PropertyToID("_Layer8Normal")
+    };
+
+    private static readonly int[] LayerNormalScalePropertyIds =
+    {
+        Shader.PropertyToID("_Layer1NormalScale"),
+        Shader.PropertyToID("_Layer2NormalScale"),
+        Shader.PropertyToID("_Layer3NormalScale"),
+        Shader.PropertyToID("_Layer4NormalScale"),
+        Shader.PropertyToID("_Layer5NormalScale"),
+        Shader.PropertyToID("_Layer6NormalScale"),
+        Shader.PropertyToID("_Layer7NormalScale"),
+        Shader.PropertyToID("_Layer8NormalScale")
+    };
+
     private static readonly int[] LayerColorPropertyIds =
     {
         Shader.PropertyToID("_Layer1Color"),

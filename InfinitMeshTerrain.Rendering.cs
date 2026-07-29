@@ -34,6 +34,8 @@ public partial class InfinitMeshTerrain
             layer.blendRange = Mathf.Max(0f, layer.blendRange);
             layer.channel = (SplatChannel)Mathf.Clamp((int)layer.channel, 0, MaxTerrainLayerCount - 1);
             layer.color = NormalizeLayerColor(layer.color);
+            layer.textureScale = NormalizeLayerTextureScale(layer.textureScale);
+            layer.normalScale = NormalizeLayerNormalScale(layer.normalScale);
             terrainLayers[i] = layer;
         }
     }
@@ -41,6 +43,16 @@ public partial class InfinitMeshTerrain
     private static Color NormalizeLayerColor(Color color)
     {
         return color.a <= 0f && color.maxColorComponent <= 0f ? Color.white : color;
+    }
+
+    private static float NormalizeLayerTextureScale(float textureScale)
+    {
+        return textureScale <= 0f ? 1f : Mathf.Max(0.001f, textureScale);
+    }
+
+    private static float NormalizeLayerNormalScale(float normalScale)
+    {
+        return normalScale <= 0f ? 1f : Mathf.Clamp(normalScale, 0.001f, 4f);
     }
 
     private SlopeTextureSettings CreateSlopeTextureSettings()

@@ -77,6 +77,9 @@ public partial class InfinitMeshTerrain
         {
             this.layerName = layerName;
             texture = null;
+            textureScale = 1f;
+            normalTexture = null;
+            normalScale = 1f;
             color = Color.white;
             this.channel = channel;
             this.startHeight = startHeight;
@@ -85,6 +88,9 @@ public partial class InfinitMeshTerrain
 
         public string layerName;
         public Texture2D texture;
+        [Min(0.001f)] public float textureScale;
+        public Texture2D normalTexture;
+        [Range(0.001f, 4f)] public float normalScale;
         public Color color;
         public SplatChannel channel;
         public float startHeight;
