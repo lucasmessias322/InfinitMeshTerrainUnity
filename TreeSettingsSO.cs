@@ -236,7 +236,6 @@ public sealed class TreePrototypeSettings
     [SerializeField, Min(0f), InspectorName("Density Per Hectare")] private float densityPerHectare = 4f;
 
     [Header("Interaction")]
-    [SerializeField] private GameObject interactivePrefab;
     [SerializeField] private GameObject felledPrefab;
     [SerializeField] private GameObject stumpPrefab;
     [SerializeField] private GameObject resourceDropPrefab;
@@ -276,7 +275,6 @@ public sealed class TreePrototypeSettings
     public GameObject Prefab => GetPrefabVariation(0);
     public IReadOnlyList<GameObject> PrefabVariations => prefabVariations != null ? prefabVariations : EmptyPrefabVariations;
     public int PrefabVariationCount => CountPrefabVariations();
-    public GameObject InteractionPrefab => GetInteractionPrefabVariation(0);
     public GameObject FelledPrefab => felledPrefab;
     public GameObject StumpPrefab => stumpPrefab;
     public GameObject ResourceDropPrefab => resourceDropPrefab;
@@ -336,11 +334,6 @@ public sealed class TreePrototypeSettings
         }
 
         return prefab;
-    }
-
-    public GameObject GetInteractionPrefabVariation(int variationIndex)
-    {
-        return interactivePrefab != null ? interactivePrefab : GetPrefabVariation(variationIndex);
     }
 
     public void ValidateValues()

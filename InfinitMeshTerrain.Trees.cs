@@ -411,7 +411,7 @@ public partial class InfinitMeshTerrain
                 if (removedTreeIds.Contains(instance.Id)
                     || activeInteractiveTrees.ContainsKey(instance.Id)
                     || instance.PrototypeSettings == null
-                    || instance.PrototypeSettings.GetInteractionPrefabVariation(instance.VariationIndex) == null)
+                    || instance.PrototypeSettings.GetPrefabVariation(instance.VariationIndex) == null)
                 {
                     continue;
                 }
@@ -477,7 +477,7 @@ public partial class InfinitMeshTerrain
     {
         TreePrototypeSettings prototypeSettings = data.PrototypeSettings;
         GameObject prefab = prototypeSettings != null
-            ? prototypeSettings.GetInteractionPrefabVariation(data.VariationIndex)
+            ? prototypeSettings.GetPrefabVariation(data.VariationIndex)
             : null;
         if (prefab == null || activeInteractiveTrees.ContainsKey(data.Id))
         {
