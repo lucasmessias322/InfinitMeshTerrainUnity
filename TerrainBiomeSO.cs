@@ -13,14 +13,19 @@ public sealed class TerrainBiomeSO : ScriptableObject
     [SerializeField] private string biomeName = "Biome";
     [SerializeField, Min(0f)] private float minDistanceFromCenter;
     [SerializeField, Min(0f)] private float maxDistanceFromCenter = DefaultMaxDistanceFromCenter;
+    [SerializeField, Min(0f)] private float selectionWeight = 1f;
     [SerializeField] private Color grassColor = DefaultGrassColor;
+    [SerializeField, HideInInspector] private bool grassSettingsInitialized;
+    [SerializeField] private BiomeGrassSettings grass = BiomeGrassSettings.Default;
     [SerializeField, HideInInspector] private bool terrainLayerColorsInitialized;
     [SerializeField] private List<TerrainBiomeLayerColor> terrainLayerColors = new List<TerrainBiomeLayerColor>();
 
     public string BiomeName => string.IsNullOrWhiteSpace(biomeName) ? name : biomeName;
     public float MinDistanceFromCenter => Mathf.Max(0f, minDistanceFromCenter);
     public float MaxDistanceFromCenter => Mathf.Max(MinDistanceFromCenter, maxDistanceFromCenter);
+    public float SelectionWeight => Mathf.Max(0f, selectionWeight);
     public Color GrassColor => grassColor;
+    public BiomeGrassSettings Grass => grass;
     public IReadOnlyList<TerrainBiomeLayerColor> TerrainLayerColors => terrainLayerColors;
 
     public void ValidateValues()
@@ -32,7 +37,16 @@ public sealed class TerrainBiomeSO : ScriptableObject
 
         minDistanceFromCenter = Mathf.Max(0f, minDistanceFromCenter);
         maxDistanceFromCenter = Mathf.Max(minDistanceFromCenter, maxDistanceFromCenter);
+        selectionWeight = Mathf.Max(0f, selectionWeight);
         grassColor.a = Mathf.Clamp01(grassColor.a);
+
+        if (!grassSettingsInitialized)
+        {
+            grass = BiomeGrassSettings.Default;
+            grassSettingsInitialized = true;
+        }
+
+        grass.Validate();
 
         if (terrainLayerColors == null)
         {
@@ -61,6 +75,39 @@ public sealed class TerrainBiomeSO : ScriptableObject
     {
         ValidateValues();
         Changed?.Invoke();
+    }
+}
+
+[Serializable]
+public struct BiomeGrassSettings
+{
+    public static readonly BiomeGrassSettings Default = new BiomeGrassSettings
+    {
+        enabled = true,
+        densityMultiplier = 1f,
+        bladeHeightMultiplier = 1f,
+        bladeWidthMultiplier = 1f,
+        colorVariation = 0f
+    };
+
+    [InspectorName("Enable Grass")] public bool enabled;
+    [Min(0f)] public float densityMultiplier;
+    [Min(0.01f)] public float bladeHeightMultiplier;
+    [Min(0.01f)] public float bladeWidthMultiplier;
+    [Range(0f, 1f)] public float colorVariation;
+
+    public bool Enabled => enabled;
+    public float DensityMultiplier => enabled ? Mathf.Max(0f, densityMultiplier) : 0f;
+    public float BladeHeightMultiplier => Mathf.Max(0.01f, bladeHeightMultiplier);
+    public float BladeWidthMultiplier => Mathf.Max(0.01f, bladeWidthMultiplier);
+    public float ColorVariation => Mathf.Clamp01(colorVariation);
+
+    public void Validate()
+    {
+        densityMultiplier = Mathf.Max(0f, densityMultiplier);
+        bladeHeightMultiplier = Mathf.Max(0.01f, bladeHeightMultiplier);
+        bladeWidthMultiplier = Mathf.Max(0.01f, bladeWidthMultiplier);
+        colorVariation = Mathf.Clamp01(colorVariation);
     }
 }
 

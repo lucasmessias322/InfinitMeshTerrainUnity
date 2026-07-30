@@ -123,8 +123,69 @@ public partial class InfinitMeshTerrain
             NoiseOctaves = biomeNoiseOctaves,
             NoiseLacunarity = biomeNoiseLacunarity,
             NoisePersistence = biomeNoisePersistence,
-            NoiseOffset = new float2(biomeNoiseOffset.x, biomeNoiseOffset.y)
+            NoiseOffset = new float2(biomeNoiseOffset.x, biomeNoiseOffset.y),
+            TerrainChunkSize = Mathf.Max(1f, chunkSize),
+            BiomeSampleSpacing = CalculateBiomeLayerColorMapSampleSpacing()
         };
+    }
+
+    private static int CalculateBiomeLayerColorMapResolution(int terrainResolution)
+    {
+        return Mathf.Max(1, terrainResolution);
+    }
+
+    private float CalculateBiomeLayerColorMapSampleSpacing()
+    {
+        return Mathf.Max(0.0001f, chunkSize) / Mathf.Max(1, GetEffectiveSegmentCount());
+    }
+
+    private void GetGrassBiomeCapacityMultipliers(
+        out float densityMultiplier,
+        out float bladeHeightMultiplier,
+        out float bladeWidthMultiplier)
+    {
+        densityMultiplier = 1f;
+        bladeHeightMultiplier = 1f;
+        bladeWidthMultiplier = 1f;
+
+        if (GetTerrainBiomeCount() == 0)
+        {
+            return;
+        }
+
+        densityMultiplier = 0f;
+        if (biomes == null)
+        {
+            return;
+        }
+
+        int scannedCount = 0;
+        for (int i = 0; i < biomes.Length && scannedCount < MaxTerrainBiomeCount; i++)
+        {
+            TerrainBiomeSO biome = biomes[i];
+            if (biome == null)
+            {
+                continue;
+            }
+
+            scannedCount++;
+            biome.ValidateValues();
+            BiomeGrassSettings grass = biome.Grass;
+            float biomeDensityMultiplier = grass.DensityMultiplier;
+            if (biomeDensityMultiplier <= 0f)
+            {
+                continue;
+            }
+
+            densityMultiplier = Mathf.Max(densityMultiplier, biomeDensityMultiplier);
+            bladeHeightMultiplier = Mathf.Max(bladeHeightMultiplier, grass.BladeHeightMultiplier);
+            bladeWidthMultiplier = Mathf.Max(bladeWidthMultiplier, grass.BladeWidthMultiplier);
+        }
+
+        if (densityMultiplier > 0f)
+        {
+            densityMultiplier = Mathf.Max(1f, densityMultiplier);
+        }
     }
 
     private GrassBiomeData[] CreateBiomeDataArray()
@@ -145,7 +206,7 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            biomeData[writeIndex] = CreateBiomeData(biome);
+            biomeData[writeIndex] = CreateBiomeData(biome, writeIndex);
             writeIndex++;
         }
 
@@ -171,7 +232,7 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            biomeData[writeIndex] = CreateTerrainBiomeLayerColorData(biome);
+            biomeData[writeIndex] = CreateTerrainBiomeLayerColorData(biome, writeIndex);
             writeIndex++;
         }
 
@@ -202,7 +263,8 @@ public partial class InfinitMeshTerrain
             return minComparison;
         }
 
-        return a.DistanceRange.y.CompareTo(b.DistanceRange.y);
+        int maxComparison = a.DistanceRange.y.CompareTo(b.DistanceRange.y);
+        return maxComparison != 0 ? maxComparison : a.DistanceRange.w.CompareTo(b.DistanceRange.w);
     }
 
     private static int CompareTerrainBiomeLayerColorData(TerrainBiomeLayerColorData a, TerrainBiomeLayerColorData b)
@@ -213,29 +275,36 @@ public partial class InfinitMeshTerrain
             return minComparison;
         }
 
-        return a.DistanceRange.y.CompareTo(b.DistanceRange.y);
+        int maxComparison = a.DistanceRange.y.CompareTo(b.DistanceRange.y);
+        return maxComparison != 0 ? maxComparison : a.DistanceRange.w.CompareTo(b.DistanceRange.w);
     }
 
-    private static GrassBiomeData CreateBiomeData(TerrainBiomeSO biome)
+    private static GrassBiomeData CreateBiomeData(TerrainBiomeSO biome, int biomeIndex)
     {
         biome.ValidateValues();
         Color grassColor = biome.GrassColor;
+        BiomeGrassSettings grass = biome.Grass;
         return new GrassBiomeData
         {
             DistanceRange = new float4(
                 biome.MinDistanceFromCenter,
                 biome.MaxDistanceFromCenter,
-                0f,
-                0f),
+                biome.SelectionWeight,
+                biomeIndex),
             GrassColor = new float4(
                 Mathf.Max(0f, grassColor.r),
                 Mathf.Max(0f, grassColor.g),
                 Mathf.Max(0f, grassColor.b),
-                Mathf.Clamp01(grassColor.a))
+                Mathf.Clamp01(grassColor.a)),
+            GrassSettings = new float4(
+                grass.DensityMultiplier,
+                grass.BladeHeightMultiplier,
+                grass.BladeWidthMultiplier,
+                grass.ColorVariation)
         };
     }
 
-    private static TerrainBiomeLayerColorData CreateTerrainBiomeLayerColorData(TerrainBiomeSO biome)
+    private static TerrainBiomeLayerColorData CreateTerrainBiomeLayerColorData(TerrainBiomeSO biome, int biomeIndex)
     {
         biome.ValidateValues();
         TerrainBiomeLayerColorData data = new TerrainBiomeLayerColorData
@@ -243,8 +312,8 @@ public partial class InfinitMeshTerrain
             DistanceRange = new float4(
                 biome.MinDistanceFromCenter,
                 biome.MaxDistanceFromCenter,
-                0f,
-                0f),
+                biome.SelectionWeight,
+                biomeIndex),
             HasLayerColor = new bool[MaxTerrainLayerCount],
             LayerColors = new Color[MaxTerrainLayerCount]
         };
@@ -297,102 +366,33 @@ public partial class InfinitMeshTerrain
         GrassBiomeData[] biomes,
         BiomeSamplingSettings settings)
     {
-        int count = biomes != null ? math.min(math.max(0, settings.Count), biomes.Length) : 0;
-        if (count <= 0)
-        {
-            return new float3(1f, 1f, 1f);
-        }
-
-        float biomeDistance = EvaluateBiomeDistance(worldXZ, settings);
-        int biomeIndex = ResolveBiomeIndex(biomeDistance, biomes, count);
-        if (biomeIndex < 0)
-        {
-            return new float3(1f, 1f, 1f);
-        }
-
-        GrassBiomeData biome = biomes[biomeIndex];
-        float3 grassColor = math.max(float3.zero, biome.GrassColor.xyz);
-        float blendDistance = math.max(0f, settings.BlendDistance);
-        if (blendDistance <= 0.0001f)
-        {
-            return grassColor;
-        }
-
-        float minDistance = math.max(0f, biome.DistanceRange.x);
-        int previousIndex = FindPreviousBiomeIndex(biomeIndex, biomes, count);
-        if (previousIndex >= 0 && minDistance > 0f && biomeDistance <= minDistance + blendDistance)
-        {
-            float t = SmoothStep01(minDistance - blendDistance, minDistance + blendDistance, biomeDistance);
-            return math.lerp(math.max(float3.zero, biomes[previousIndex].GrassColor.xyz), grassColor, t);
-        }
-
-        int nextIndex = FindNextBiomeIndex(biomeIndex, biomes, count);
-        if (nextIndex >= 0)
-        {
-            float nextMinDistance = math.max(0f, biomes[nextIndex].DistanceRange.x);
-            if (biomeDistance >= nextMinDistance - blendDistance)
-            {
-                float t = SmoothStep01(nextMinDistance - blendDistance, nextMinDistance + blendDistance, biomeDistance);
-                grassColor = math.lerp(grassColor, math.max(float3.zero, biomes[nextIndex].GrassColor.xyz), t);
-            }
-        }
-
-        return grassColor;
+        return EvaluateBiomeGrassSample(worldXZ, biomes, settings).GrassColor;
     }
 
-    private static float3 EvaluateBiomeLayerColor(
+    private static GrassBiomeSample EvaluateBiomeGrassSample(
         float2 worldXZ,
-        TerrainBiomeLayerColorData[] biomes,
-        BiomeSamplingSettings settings,
-        int channelIndex,
-        Color fallbackColor)
+        GrassBiomeData[] biomes,
+        BiomeSamplingSettings settings)
     {
         int count = biomes != null ? math.min(math.max(0, settings.Count), biomes.Length) : 0;
         if (count <= 0)
         {
-            return ToFloat3(fallbackColor);
+            return CreateDefaultGrassBiomeSample(0f);
         }
 
-        float biomeDistance = EvaluateBiomeDistance(worldXZ, settings);
-        int biomeIndex = ResolveTerrainBiomeLayerColorIndex(biomeDistance, biomes, count);
-        if (biomeIndex < 0)
-        {
-            return ToFloat3(fallbackColor);
-        }
-
-        float3 layerColor = ResolveTerrainBiomeLayerColor(biomes[biomeIndex], channelIndex, fallbackColor);
-        float blendDistance = math.max(0f, settings.BlendDistance);
-        if (blendDistance <= 0.0001f)
-        {
-            return layerColor;
-        }
-
-        float minDistance = math.max(0f, biomes[biomeIndex].DistanceRange.x);
-        int previousIndex = FindPreviousTerrainBiomeLayerColorIndex(biomeIndex, biomes, count);
-        if (previousIndex >= 0 && minDistance > 0f && biomeDistance <= minDistance + blendDistance)
-        {
-            float t = SmoothStep01(minDistance - blendDistance, minDistance + blendDistance, biomeDistance);
-            return math.lerp(
-                ResolveTerrainBiomeLayerColor(biomes[previousIndex], channelIndex, fallbackColor),
-                layerColor,
-                t);
-        }
-
-        int nextIndex = FindNextTerrainBiomeLayerColorIndex(biomeIndex, biomes, count);
-        if (nextIndex >= 0)
-        {
-            float nextMinDistance = math.max(0f, biomes[nextIndex].DistanceRange.x);
-            if (biomeDistance >= nextMinDistance - blendDistance)
-            {
-                float t = SmoothStep01(nextMinDistance - blendDistance, nextMinDistance + blendDistance, biomeDistance);
-                layerColor = math.lerp(
-                    layerColor,
-                    ResolveTerrainBiomeLayerColor(biomes[nextIndex], channelIndex, fallbackColor),
-                    t);
-            }
-        }
-
-        return layerColor;
+        float2 placementWorldXZ = QuantizeBiomeGrassWorldXZ(worldXZ, settings);
+        float placementBiomeDistance = EvaluateBiomeDistance(placementWorldXZ, settings);
+        float colorBiomeDistance = settings.BlendDistance > 0.0001f
+            ? EvaluateBiomeDistance(worldXZ, settings)
+            : placementBiomeDistance;
+        return ResolveGrassBiomeSample(
+            placementWorldXZ,
+            placementBiomeDistance,
+            worldXZ,
+            colorBiomeDistance,
+            biomes,
+            settings,
+            count);
     }
 
     private static float3 EvaluateBiomeGrassColor(
@@ -400,47 +400,482 @@ public partial class InfinitMeshTerrain
         NativeArray<GrassBiomeData> biomes,
         BiomeSamplingSettings settings)
     {
+        return EvaluateBiomeGrassSample(worldXZ, biomes, settings).GrassColor;
+    }
+
+    private static GrassBiomeSample EvaluateBiomeGrassSample(
+        float2 worldXZ,
+        NativeArray<GrassBiomeData> biomes,
+        BiomeSamplingSettings settings)
+    {
         int count = math.min(math.max(0, settings.Count), biomes.Length);
         if (count <= 0)
         {
-            return new float3(1f, 1f, 1f);
+            return CreateDefaultGrassBiomeSample(0f);
         }
 
-        float biomeDistance = EvaluateBiomeDistance(worldXZ, settings);
-        int biomeIndex = ResolveBiomeIndex(biomeDistance, biomes, count);
-        if (biomeIndex < 0)
+        float2 placementWorldXZ = QuantizeBiomeGrassWorldXZ(worldXZ, settings);
+        float placementBiomeDistance = EvaluateBiomeDistance(placementWorldXZ, settings);
+        float colorBiomeDistance = settings.BlendDistance > 0.0001f
+            ? EvaluateBiomeDistance(worldXZ, settings)
+            : placementBiomeDistance;
+        return ResolveGrassBiomeSample(
+            placementWorldXZ,
+            placementBiomeDistance,
+            worldXZ,
+            colorBiomeDistance,
+            biomes,
+            settings,
+            count);
+    }
+
+    private static GrassBiomeSample CreateDefaultGrassBiomeSample(float colorVariation)
+    {
+        return new GrassBiomeSample
         {
-            return new float3(1f, 1f, 1f);
-        }
+            GrassColor = new float3(1f, 1f, 1f),
+            DensityMultiplier = 1f,
+            BladeHeightMultiplier = 1f,
+            BladeWidthMultiplier = 1f,
+            ColorVariation = math.saturate(colorVariation)
+        };
+    }
 
-        GrassBiomeData biome = biomes[biomeIndex];
-        float3 grassColor = math.max(float3.zero, biome.GrassColor.xyz);
+    private static GrassBiomeSample CreateGrassBiomeSample(GrassBiomeData biome)
+    {
+        return new GrassBiomeSample
+        {
+            GrassColor = math.max(float3.zero, biome.GrassColor.xyz),
+            DensityMultiplier = math.max(0f, biome.GrassSettings.x),
+            BladeHeightMultiplier = math.max(0.01f, biome.GrassSettings.y),
+            BladeWidthMultiplier = math.max(0.01f, biome.GrassSettings.z),
+            ColorVariation = math.saturate(biome.GrassSettings.w)
+        };
+    }
+
+    private static GrassBiomeSample ResolveGrassBiomeSample(
+        float2 placementWorldXZ,
+        float placementBiomeDistance,
+        float2 colorWorldXZ,
+        float colorBiomeDistance,
+        GrassBiomeData[] biomes,
+        BiomeSamplingSettings settings,
+        int count)
+    {
+        PrepareGrassBiomeBlendState(
+            out int placementPrimaryIndex,
+            out float placementBestScore,
+            out int placementSecondaryIndex,
+            out float placementSecondScore,
+            out int placementNearestIndex,
+            out float placementNearestDistance,
+            out int placementNearestTransitionIndex,
+            out float placementNearestTransitionDistance,
+            out int colorPrimaryIndex,
+            out float colorBestScore,
+            out int colorSecondaryIndex,
+            out float colorSecondScore,
+            out int colorNearestIndex,
+            out float colorNearestDistance,
+            out int colorNearestTransitionIndex,
+            out float colorNearestTransitionDistance);
+
         float blendDistance = math.max(0f, settings.BlendDistance);
-        if (blendDistance <= 0.0001f)
+        for (int i = 0; i < count; i++)
         {
-            return grassColor;
+            float4 distanceRange = biomes[i].DistanceRange;
+            TrackGrassBiomeCandidate(
+                placementWorldXZ,
+                placementBiomeDistance,
+                settings,
+                i,
+                distanceRange,
+                0f,
+                ref placementPrimaryIndex,
+                ref placementBestScore,
+                ref placementSecondaryIndex,
+                ref placementSecondScore,
+                ref placementNearestIndex,
+                ref placementNearestDistance,
+                ref placementNearestTransitionIndex,
+                ref placementNearestTransitionDistance);
+            TrackGrassBiomeCandidate(
+                colorWorldXZ,
+                colorBiomeDistance,
+                settings,
+                i,
+                distanceRange,
+                blendDistance,
+                ref colorPrimaryIndex,
+                ref colorBestScore,
+                ref colorSecondaryIndex,
+                ref colorSecondScore,
+                ref colorNearestIndex,
+                ref colorNearestDistance,
+                ref colorNearestTransitionIndex,
+                ref colorNearestTransitionDistance);
         }
 
-        float minDistance = math.max(0f, biome.DistanceRange.x);
-        int previousIndex = FindPreviousBiomeIndex(biomeIndex, biomes, count);
-        if (previousIndex >= 0 && minDistance > 0f && biomeDistance <= minDistance + blendDistance)
+        if (placementPrimaryIndex < 0)
         {
-            float t = SmoothStep01(minDistance - blendDistance, minDistance + blendDistance, biomeDistance);
-            return math.lerp(math.max(float3.zero, biomes[previousIndex].GrassColor.xyz), grassColor, t);
+            placementPrimaryIndex = placementNearestIndex;
         }
 
-        int nextIndex = FindNextBiomeIndex(biomeIndex, biomes, count);
-        if (nextIndex >= 0)
+        if (placementPrimaryIndex < 0)
         {
-            float nextMinDistance = math.max(0f, biomes[nextIndex].DistanceRange.x);
-            if (biomeDistance >= nextMinDistance - blendDistance)
+            return CreateDefaultGrassBiomeSample(0f);
+        }
+
+        GrassBiomeSample sample = CreateGrassBiomeSample(biomes[placementPrimaryIndex]);
+        ApplySmoothGrassBiomeColor(
+            ref sample,
+            colorPrimaryIndex,
+            colorSecondaryIndex,
+            colorSecondScore,
+            colorBestScore,
+            colorNearestIndex,
+            colorNearestTransitionIndex,
+            colorNearestTransitionDistance,
+            biomes,
+            settings,
+            blendDistance);
+        return sample;
+    }
+
+    private static GrassBiomeSample ResolveGrassBiomeSample(
+        float2 placementWorldXZ,
+        float placementBiomeDistance,
+        float2 colorWorldXZ,
+        float colorBiomeDistance,
+        NativeArray<GrassBiomeData> biomes,
+        BiomeSamplingSettings settings,
+        int count)
+    {
+        PrepareGrassBiomeBlendState(
+            out int placementPrimaryIndex,
+            out float placementBestScore,
+            out int placementSecondaryIndex,
+            out float placementSecondScore,
+            out int placementNearestIndex,
+            out float placementNearestDistance,
+            out int placementNearestTransitionIndex,
+            out float placementNearestTransitionDistance,
+            out int colorPrimaryIndex,
+            out float colorBestScore,
+            out int colorSecondaryIndex,
+            out float colorSecondScore,
+            out int colorNearestIndex,
+            out float colorNearestDistance,
+            out int colorNearestTransitionIndex,
+            out float colorNearestTransitionDistance);
+
+        float blendDistance = math.max(0f, settings.BlendDistance);
+        for (int i = 0; i < count; i++)
+        {
+            float4 distanceRange = biomes[i].DistanceRange;
+            TrackGrassBiomeCandidate(
+                placementWorldXZ,
+                placementBiomeDistance,
+                settings,
+                i,
+                distanceRange,
+                0f,
+                ref placementPrimaryIndex,
+                ref placementBestScore,
+                ref placementSecondaryIndex,
+                ref placementSecondScore,
+                ref placementNearestIndex,
+                ref placementNearestDistance,
+                ref placementNearestTransitionIndex,
+                ref placementNearestTransitionDistance);
+            TrackGrassBiomeCandidate(
+                colorWorldXZ,
+                colorBiomeDistance,
+                settings,
+                i,
+                distanceRange,
+                blendDistance,
+                ref colorPrimaryIndex,
+                ref colorBestScore,
+                ref colorSecondaryIndex,
+                ref colorSecondScore,
+                ref colorNearestIndex,
+                ref colorNearestDistance,
+                ref colorNearestTransitionIndex,
+                ref colorNearestTransitionDistance);
+        }
+
+        if (placementPrimaryIndex < 0)
+        {
+            placementPrimaryIndex = placementNearestIndex;
+        }
+
+        if (placementPrimaryIndex < 0)
+        {
+            return CreateDefaultGrassBiomeSample(0f);
+        }
+
+        GrassBiomeSample sample = CreateGrassBiomeSample(biomes[placementPrimaryIndex]);
+        ApplySmoothGrassBiomeColor(
+            ref sample,
+            colorPrimaryIndex,
+            colorSecondaryIndex,
+            colorSecondScore,
+            colorBestScore,
+            colorNearestIndex,
+            colorNearestTransitionIndex,
+            colorNearestTransitionDistance,
+            biomes,
+            settings,
+            blendDistance);
+        return sample;
+    }
+
+    private static void PrepareGrassBiomeBlendState(
+        out int placementPrimaryIndex,
+        out float placementBestScore,
+        out int placementSecondaryIndex,
+        out float placementSecondScore,
+        out int placementNearestIndex,
+        out float placementNearestDistance,
+        out int placementNearestTransitionIndex,
+        out float placementNearestTransitionDistance,
+        out int colorPrimaryIndex,
+        out float colorBestScore,
+        out int colorSecondaryIndex,
+        out float colorSecondScore,
+        out int colorNearestIndex,
+        out float colorNearestDistance,
+        out int colorNearestTransitionIndex,
+        out float colorNearestTransitionDistance)
+    {
+        placementPrimaryIndex = -1;
+        placementBestScore = float.MinValue;
+        placementSecondaryIndex = -1;
+        placementSecondScore = float.MinValue;
+        placementNearestIndex = -1;
+        placementNearestDistance = float.MaxValue;
+        placementNearestTransitionIndex = -1;
+        placementNearestTransitionDistance = float.MaxValue;
+
+        colorPrimaryIndex = -1;
+        colorBestScore = float.MinValue;
+        colorSecondaryIndex = -1;
+        colorSecondScore = float.MinValue;
+        colorNearestIndex = -1;
+        colorNearestDistance = float.MaxValue;
+        colorNearestTransitionIndex = -1;
+        colorNearestTransitionDistance = float.MaxValue;
+    }
+
+    private static void TrackGrassBiomeCandidate(
+        float2 worldXZ,
+        float biomeDistance,
+        BiomeSamplingSettings settings,
+        int candidateIndex,
+        float4 distanceRange,
+        float blendDistance,
+        ref int primaryIndex,
+        ref float bestScore,
+        ref int secondaryIndex,
+        ref float secondScore,
+        ref int nearestIndex,
+        ref float nearestDistance,
+        ref int nearestTransitionIndex,
+        ref float nearestTransitionDistance)
+    {
+        float minDistance = math.max(0f, distanceRange.x);
+        float maxDistance = math.max(minDistance, distanceRange.y);
+        float selectionWeight = GetBiomeSelectionWeight(distanceRange);
+        if (selectionWeight <= 0f)
+        {
+            return;
+        }
+
+        float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
+        if (distanceToRange < nearestDistance)
+        {
+            nearestDistance = distanceToRange;
+            nearestIndex = candidateIndex;
+        }
+
+        if (distanceToRange <= 0.0001f)
+        {
+            int biomeSeedIndex = GetBiomeSeedIndex(distanceRange, candidateIndex);
+            float score = EvaluateBiomeSelectionScore(worldXZ, settings, biomeSeedIndex, selectionWeight);
+            if (score > bestScore || (math.abs(score - bestScore) <= 0.0001f && candidateIndex > primaryIndex))
             {
-                float t = SmoothStep01(nextMinDistance - blendDistance, nextMinDistance + blendDistance, biomeDistance);
-                grassColor = math.lerp(grassColor, math.max(float3.zero, biomes[nextIndex].GrassColor.xyz), t);
+                secondaryIndex = primaryIndex;
+                secondScore = bestScore;
+                primaryIndex = candidateIndex;
+                bestScore = score;
+            }
+            else if (score > secondScore || (math.abs(score - secondScore) <= 0.0001f && candidateIndex > secondaryIndex))
+            {
+                secondaryIndex = candidateIndex;
+                secondScore = score;
+            }
+        }
+        else if (blendDistance > 0.0001f
+            && distanceToRange < nearestTransitionDistance
+            && distanceToRange <= blendDistance)
+        {
+            nearestTransitionDistance = distanceToRange;
+            nearestTransitionIndex = candidateIndex;
+        }
+    }
+
+    private static void ApplySmoothGrassBiomeColor(
+        ref GrassBiomeSample sample,
+        int colorPrimaryIndex,
+        int colorSecondaryIndex,
+        float colorSecondScore,
+        float colorBestScore,
+        int colorNearestIndex,
+        int colorNearestTransitionIndex,
+        float colorNearestTransitionDistance,
+        GrassBiomeData[] biomes,
+        BiomeSamplingSettings settings,
+        float blendDistance)
+    {
+        if (colorPrimaryIndex < 0)
+        {
+            colorPrimaryIndex = colorNearestIndex;
+        }
+
+        if (colorPrimaryIndex < 0)
+        {
+            return;
+        }
+
+        GrassBiomeSample colorSample = CreateGrassBiomeSample(biomes[colorPrimaryIndex]);
+        sample.GrassColor = colorSample.GrassColor;
+        sample.ColorVariation = colorSample.ColorVariation;
+        if (TryGetGrassBiomeColorBlend(
+            colorSecondaryIndex,
+            colorSecondScore,
+            colorBestScore,
+            colorNearestTransitionIndex,
+            colorNearestTransitionDistance,
+            colorPrimaryIndex,
+            settings,
+            blendDistance,
+            out int blendIndex,
+            out float blendWeight))
+        {
+            BlendGrassBiomeColor(ref sample, CreateGrassBiomeSample(biomes[blendIndex]), blendWeight);
+        }
+    }
+
+    private static void ApplySmoothGrassBiomeColor(
+        ref GrassBiomeSample sample,
+        int colorPrimaryIndex,
+        int colorSecondaryIndex,
+        float colorSecondScore,
+        float colorBestScore,
+        int colorNearestIndex,
+        int colorNearestTransitionIndex,
+        float colorNearestTransitionDistance,
+        NativeArray<GrassBiomeData> biomes,
+        BiomeSamplingSettings settings,
+        float blendDistance)
+    {
+        if (colorPrimaryIndex < 0)
+        {
+            colorPrimaryIndex = colorNearestIndex;
+        }
+
+        if (colorPrimaryIndex < 0)
+        {
+            return;
+        }
+
+        GrassBiomeSample colorSample = CreateGrassBiomeSample(biomes[colorPrimaryIndex]);
+        sample.GrassColor = colorSample.GrassColor;
+        sample.ColorVariation = colorSample.ColorVariation;
+        if (TryGetGrassBiomeColorBlend(
+            colorSecondaryIndex,
+            colorSecondScore,
+            colorBestScore,
+            colorNearestTransitionIndex,
+            colorNearestTransitionDistance,
+            colorPrimaryIndex,
+            settings,
+            blendDistance,
+            out int blendIndex,
+            out float blendWeight))
+        {
+            BlendGrassBiomeColor(ref sample, CreateGrassBiomeSample(biomes[blendIndex]), blendWeight);
+        }
+    }
+
+    private static bool TryGetGrassBiomeColorBlend(
+        int secondaryIndex,
+        float secondScore,
+        float bestScore,
+        int nearestTransitionIndex,
+        float nearestTransitionDistance,
+        int primaryIndex,
+        BiomeSamplingSettings settings,
+        float blendDistance,
+        out int blendIndex,
+        out float blendWeight)
+    {
+        blendIndex = -1;
+        blendWeight = 0f;
+
+        if (blendDistance > 0.0001f && secondaryIndex >= 0)
+        {
+            float selectionBlendWidth = GetBiomeSelectionBlendWidth(settings);
+            if (selectionBlendWidth > 0.0001f)
+            {
+                float scoreGap = math.max(0f, bestScore - secondScore);
+                float scoreBlend = 0.5f - scoreGap / (selectionBlendWidth * 2f);
+                if (scoreBlend > blendWeight)
+                {
+                    blendIndex = secondaryIndex;
+                    blendWeight = math.saturate(scoreBlend);
+                }
             }
         }
 
-        return grassColor;
+        if (blendDistance > 0.0001f
+            && nearestTransitionIndex >= 0
+            && nearestTransitionIndex != primaryIndex)
+        {
+            float t = math.saturate(nearestTransitionDistance / blendDistance);
+            float rangeBlend = (1f - SmoothBiomeBlend01(t)) * 0.5f;
+            if (rangeBlend > blendWeight)
+            {
+                blendIndex = nearestTransitionIndex;
+                blendWeight = rangeBlend;
+            }
+        }
+
+        return blendIndex >= 0 && blendWeight > 0.0001f;
+    }
+
+    private static void BlendGrassBiomeColor(
+        ref GrassBiomeSample sample,
+        GrassBiomeSample secondarySample,
+        float weight)
+    {
+        float blendWeight = math.saturate(weight);
+        sample.GrassColor = math.lerp(sample.GrassColor, secondarySample.GrassColor, blendWeight);
+        sample.ColorVariation = math.lerp(sample.ColorVariation, secondarySample.ColorVariation, blendWeight);
+    }
+
+    private static float2 QuantizeBiomeGrassWorldXZ(float2 worldXZ, BiomeSamplingSettings settings)
+    {
+        if (settings.TerrainChunkSize <= 0.0001f || settings.BiomeSampleSpacing <= 0.0001f)
+        {
+            return worldXZ;
+        }
+
+        float2 chunkCoord = math.floor(worldXZ / settings.TerrainChunkSize);
+        float2 chunkOrigin = chunkCoord * settings.TerrainChunkSize;
+        float2 local = worldXZ - chunkOrigin;
+        return chunkOrigin + math.round(local / settings.BiomeSampleSpacing) * settings.BiomeSampleSpacing;
     }
 
     private static float EvaluateBiomeDistance(float2 worldXZ, BiomeSamplingSettings settings)
@@ -458,16 +893,55 @@ public partial class InfinitMeshTerrain
 
     private static float SampleBiomeNoise(float2 worldXZ, BiomeSamplingSettings settings)
     {
+        return SampleBiomeFractalValueNoise(worldXZ, settings, -10007);
+    }
+
+    private static float GetBiomeSelectionWeight(float4 distanceRange)
+    {
+        return math.max(0f, distanceRange.z);
+    }
+
+    private static int GetBiomeSeedIndex(float4 distanceRange, int fallbackIndex)
+    {
+        return distanceRange.w >= 0f ? (int)math.round(distanceRange.w) : fallbackIndex;
+    }
+
+    private static float EvaluateBiomeSelectionScore(
+        float2 worldXZ,
+        BiomeSamplingSettings settings,
+        int biomeIndex,
+        float selectionWeight)
+    {
+        float score = settings.UseNoise != 0
+            ? SampleBiomeSelectionNoise(worldXZ, settings, biomeIndex)
+            : 0f;
+        float weightBias = math.log(math.max(0.0001f, selectionWeight)) * 0.35f;
+        return score + weightBias + biomeIndex * 0.00001f;
+    }
+
+    private static float SampleBiomeSelectionNoise(
+        float2 worldXZ,
+        BiomeSamplingSettings settings,
+        int biomeIndex)
+    {
+        return SampleBiomeFractalValueNoise(worldXZ, settings, biomeIndex);
+    }
+
+    private static float SampleBiomeFractalValueNoise(
+        float2 worldXZ,
+        BiomeSamplingSettings settings,
+        int salt)
+    {
         float frequency = math.max(0.000001f, settings.NoiseFrequency);
         float amplitude = 1f;
         float value = 0f;
         float amplitudeSum = 0f;
         int octaveCount = math.clamp(settings.NoiseOctaves, 1, 8);
-        float2 seedOffset = settings.NoiseOffset + new float2(settings.Seed * 29.37f, settings.Seed * -17.91f);
+        float2 seedOffset = settings.NoiseOffset + new float2(settings.Seed * 17.13f, settings.Seed * -31.71f);
 
         for (int octave = 0; octave < octaveCount; octave++)
         {
-            value += noise.snoise((worldXZ + seedOffset) * frequency) * amplitude;
+            value += SampleBiomeValueNoise((worldXZ + seedOffset) * frequency, settings.Seed, salt, octave) * amplitude;
             amplitudeSum += amplitude;
             amplitude *= math.saturate(settings.NoisePersistence);
             frequency *= math.max(1f, settings.NoiseLacunarity);
@@ -476,10 +950,74 @@ public partial class InfinitMeshTerrain
         return amplitudeSum > 0.0001f ? value / amplitudeSum : 0f;
     }
 
-    private static int ResolveBiomeIndex(float biomeDistance, GrassBiomeData[] biomes, int count)
+    private static float SampleBiomeValueNoise(float2 sample, int seed, int salt, int octave)
+    {
+        int x0 = (int)math.floor(sample.x);
+        int z0 = (int)math.floor(sample.y);
+        int x1 = x0 + 1;
+        int z1 = z0 + 1;
+        float2 t = new float2(sample.x - x0, sample.y - z0);
+        t = t * t * (3f - 2f * t);
+
+        float v00 = BiomeHash01(BiomeNoiseHash(x0, z0, seed, salt, octave)) * 2f - 1f;
+        float v10 = BiomeHash01(BiomeNoiseHash(x1, z0, seed, salt, octave)) * 2f - 1f;
+        float v01 = BiomeHash01(BiomeNoiseHash(x0, z1, seed, salt, octave)) * 2f - 1f;
+        float v11 = BiomeHash01(BiomeNoiseHash(x1, z1, seed, salt, octave)) * 2f - 1f;
+
+        return math.lerp(math.lerp(v00, v10, t.x), math.lerp(v01, v11, t.x), t.y);
+    }
+
+    private static uint BiomeNoiseHash(int x, int z, int seed, int salt, int octave)
+    {
+        unchecked
+        {
+            uint hash = 2166136261u;
+            hash = BiomeMix(hash, (uint)x);
+            hash = BiomeMix(hash, (uint)z);
+            hash = BiomeMix(hash, (uint)seed);
+            hash = BiomeMix(hash, (uint)salt);
+            hash = BiomeMix(hash, (uint)octave);
+            return hash;
+        }
+    }
+
+    private static uint BiomeMix(uint hash, uint value)
+    {
+        unchecked
+        {
+            hash ^= value;
+            hash *= 16777619u;
+            return hash;
+        }
+    }
+
+    private static uint BiomeHash(uint value)
+    {
+        unchecked
+        {
+            value ^= value >> 16;
+            value *= 0x7feb352du;
+            value ^= value >> 15;
+            value *= 0x846ca68bu;
+            value ^= value >> 16;
+            return value;
+        }
+    }
+
+    private static float BiomeHash01(uint value)
+    {
+        return (BiomeHash(value) >> 8) * (1f / 16777216f);
+    }
+
+    private static int ResolveBiomeIndex(
+        float2 worldXZ,
+        float biomeDistance,
+        GrassBiomeData[] biomes,
+        BiomeSamplingSettings settings,
+        int count)
     {
         int biomeIndex = -1;
-        float bestMinDistance = float.MinValue;
+        float bestScore = float.MinValue;
         float nearestDistance = float.MaxValue;
         int nearestIndex = -1;
 
@@ -488,12 +1026,10 @@ public partial class InfinitMeshTerrain
             GrassBiomeData biome = biomes[i];
             float minDistance = math.max(0f, biome.DistanceRange.x);
             float maxDistance = math.max(minDistance, biome.DistanceRange.y);
-            if (biomeDistance >= minDistance
-                && biomeDistance <= maxDistance
-                && (minDistance > bestMinDistance || (math.abs(minDistance - bestMinDistance) <= 0.0001f && i > biomeIndex)))
+            float selectionWeight = GetBiomeSelectionWeight(biome.DistanceRange);
+            if (selectionWeight <= 0f)
             {
-                biomeIndex = i;
-                bestMinDistance = minDistance;
+                continue;
             }
 
             float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
@@ -502,32 +1038,54 @@ public partial class InfinitMeshTerrain
                 nearestDistance = distanceToRange;
                 nearestIndex = i;
             }
+
+            if (distanceToRange <= 0.0001f)
+            {
+                int biomeSeedIndex = GetBiomeSeedIndex(biome.DistanceRange, i);
+                float score = EvaluateBiomeSelectionScore(worldXZ, settings, biomeSeedIndex, selectionWeight);
+                if (score > bestScore || (math.abs(score - bestScore) <= 0.0001f && i > biomeIndex))
+                {
+                    biomeIndex = i;
+                    bestScore = score;
+                }
+            }
         }
 
         return biomeIndex >= 0 ? biomeIndex : nearestIndex;
     }
 
-    private static int ResolveTerrainBiomeLayerColorIndex(
+    private static TerrainBiomeLayerColorBlend ResolveTerrainBiomeLayerColorBlend(
+        float2 worldXZ,
         float biomeDistance,
         TerrainBiomeLayerColorData[] biomes,
+        BiomeSamplingSettings settings,
         int count)
     {
-        int biomeIndex = -1;
-        float bestMinDistance = float.MinValue;
+        TerrainBiomeLayerColorBlend blend = new TerrainBiomeLayerColorBlend
+        {
+            PrimaryIndex = -1,
+            SecondaryIndex = -1,
+            SecondaryWeight = 0f
+        };
+
+        float bestScore = float.MinValue;
+        float secondScore = float.MinValue;
+        int secondIndex = -1;
         float nearestDistance = float.MaxValue;
         int nearestIndex = -1;
+        float nearestTransitionDistance = float.MaxValue;
+        int nearestTransitionIndex = -1;
+        float blendDistance = math.max(0f, settings.BlendDistance);
 
         for (int i = 0; i < count; i++)
         {
             TerrainBiomeLayerColorData biome = biomes[i];
             float minDistance = math.max(0f, biome.DistanceRange.x);
             float maxDistance = math.max(minDistance, biome.DistanceRange.y);
-            if (biomeDistance >= minDistance
-                && biomeDistance <= maxDistance
-                && (minDistance > bestMinDistance || (math.abs(minDistance - bestMinDistance) <= 0.0001f && i > biomeIndex)))
+            float selectionWeight = GetBiomeSelectionWeight(biome.DistanceRange);
+            if (selectionWeight <= 0f)
             {
-                biomeIndex = i;
-                bestMinDistance = minDistance;
+                continue;
             }
 
             float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
@@ -536,15 +1094,98 @@ public partial class InfinitMeshTerrain
                 nearestDistance = distanceToRange;
                 nearestIndex = i;
             }
+
+            if (distanceToRange <= 0.0001f)
+            {
+                int biomeSeedIndex = GetBiomeSeedIndex(biome.DistanceRange, i);
+                float score = EvaluateBiomeSelectionScore(worldXZ, settings, biomeSeedIndex, selectionWeight);
+                if (score > bestScore || (math.abs(score - bestScore) <= 0.0001f && i > blend.PrimaryIndex))
+                {
+                    secondIndex = blend.PrimaryIndex;
+                    secondScore = bestScore;
+                    blend.PrimaryIndex = i;
+                    bestScore = score;
+                }
+                else if (score > secondScore || (math.abs(score - secondScore) <= 0.0001f && i > secondIndex))
+                {
+                    secondIndex = i;
+                    secondScore = score;
+                }
+            }
+            else if (blendDistance > 0.0001f
+                && distanceToRange < nearestTransitionDistance
+                && distanceToRange <= blendDistance)
+            {
+                nearestTransitionDistance = distanceToRange;
+                nearestTransitionIndex = i;
+            }
         }
 
-        return biomeIndex >= 0 ? biomeIndex : nearestIndex;
+        if (blend.PrimaryIndex < 0)
+        {
+            blend.PrimaryIndex = nearestIndex;
+            return blend;
+        }
+
+        if (blendDistance <= 0.0001f)
+        {
+            return blend;
+        }
+
+        if (secondIndex >= 0)
+        {
+            float selectionBlendWidth = GetBiomeSelectionBlendWidth(settings);
+            if (selectionBlendWidth > 0.0001f)
+            {
+                float scoreGap = math.max(0f, bestScore - secondScore);
+                float scoreBlend = 0.5f - scoreGap / (selectionBlendWidth * 2f);
+                if (scoreBlend > blend.SecondaryWeight)
+                {
+                    blend.SecondaryIndex = secondIndex;
+                    blend.SecondaryWeight = math.saturate(scoreBlend);
+                }
+            }
+        }
+
+        if (nearestTransitionIndex >= 0 && nearestTransitionIndex != blend.PrimaryIndex)
+        {
+            float t = math.saturate(nearestTransitionDistance / blendDistance);
+            float rangeBlend = (1f - SmoothBiomeBlend01(t)) * 0.5f;
+            if (rangeBlend > blend.SecondaryWeight)
+            {
+                blend.SecondaryIndex = nearestTransitionIndex;
+                blend.SecondaryWeight = rangeBlend;
+            }
+        }
+
+        return blend;
     }
 
-    private static int ResolveBiomeIndex(float biomeDistance, NativeArray<GrassBiomeData> biomes, int count)
+    private static float GetBiomeSelectionBlendWidth(BiomeSamplingSettings settings)
+    {
+        if (settings.UseNoise == 0 || settings.BlendDistance <= 0.0001f)
+        {
+            return 0f;
+        }
+
+        return math.clamp(settings.BlendDistance * math.max(0.000001f, settings.NoiseFrequency), 0.02f, 0.5f);
+    }
+
+    private static float SmoothBiomeBlend01(float value)
+    {
+        float t = math.saturate(value);
+        return t * t * (3f - 2f * t);
+    }
+
+    private static int ResolveBiomeIndex(
+        float2 worldXZ,
+        float biomeDistance,
+        NativeArray<GrassBiomeData> biomes,
+        BiomeSamplingSettings settings,
+        int count)
     {
         int biomeIndex = -1;
-        float bestMinDistance = float.MinValue;
+        float bestScore = float.MinValue;
         float nearestDistance = float.MaxValue;
         int nearestIndex = -1;
 
@@ -553,12 +1194,10 @@ public partial class InfinitMeshTerrain
             GrassBiomeData biome = biomes[i];
             float minDistance = math.max(0f, biome.DistanceRange.x);
             float maxDistance = math.max(minDistance, biome.DistanceRange.y);
-            if (biomeDistance >= minDistance
-                && biomeDistance <= maxDistance
-                && (minDistance > bestMinDistance || (math.abs(minDistance - bestMinDistance) <= 0.0001f && i > biomeIndex)))
+            float selectionWeight = GetBiomeSelectionWeight(biome.DistanceRange);
+            if (selectionWeight <= 0f)
             {
-                biomeIndex = i;
-                bestMinDistance = minDistance;
+                continue;
             }
 
             float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
@@ -567,129 +1206,20 @@ public partial class InfinitMeshTerrain
                 nearestDistance = distanceToRange;
                 nearestIndex = i;
             }
+
+            if (distanceToRange <= 0.0001f)
+            {
+                int biomeSeedIndex = GetBiomeSeedIndex(biome.DistanceRange, i);
+                float score = EvaluateBiomeSelectionScore(worldXZ, settings, biomeSeedIndex, selectionWeight);
+                if (score > bestScore || (math.abs(score - bestScore) <= 0.0001f && i > biomeIndex))
+                {
+                    biomeIndex = i;
+                    bestScore = score;
+                }
+            }
         }
 
         return biomeIndex >= 0 ? biomeIndex : nearestIndex;
-    }
-
-    private static int FindPreviousBiomeIndex(int biomeIndex, GrassBiomeData[] biomes, int count)
-    {
-        int previousIndex = -1;
-        float currentMinDistance = math.max(0f, biomes[biomeIndex].DistanceRange.x);
-        float bestMinDistance = float.MinValue;
-
-        for (int i = 0; i < count; i++)
-        {
-            float minDistance = math.max(0f, biomes[i].DistanceRange.x);
-            if (minDistance < currentMinDistance && minDistance > bestMinDistance)
-            {
-                bestMinDistance = minDistance;
-                previousIndex = i;
-            }
-        }
-
-        return previousIndex;
-    }
-
-    private static int FindPreviousTerrainBiomeLayerColorIndex(
-        int biomeIndex,
-        TerrainBiomeLayerColorData[] biomes,
-        int count)
-    {
-        int previousIndex = -1;
-        float currentMinDistance = math.max(0f, biomes[biomeIndex].DistanceRange.x);
-        float bestMinDistance = float.MinValue;
-
-        for (int i = 0; i < count; i++)
-        {
-            float minDistance = math.max(0f, biomes[i].DistanceRange.x);
-            if (minDistance < currentMinDistance && minDistance > bestMinDistance)
-            {
-                bestMinDistance = minDistance;
-                previousIndex = i;
-            }
-        }
-
-        return previousIndex;
-    }
-
-    private static int FindPreviousBiomeIndex(int biomeIndex, NativeArray<GrassBiomeData> biomes, int count)
-    {
-        int previousIndex = -1;
-        float currentMinDistance = math.max(0f, biomes[biomeIndex].DistanceRange.x);
-        float bestMinDistance = float.MinValue;
-
-        for (int i = 0; i < count; i++)
-        {
-            float minDistance = math.max(0f, biomes[i].DistanceRange.x);
-            if (minDistance < currentMinDistance && minDistance > bestMinDistance)
-            {
-                bestMinDistance = minDistance;
-                previousIndex = i;
-            }
-        }
-
-        return previousIndex;
-    }
-
-    private static int FindNextBiomeIndex(int biomeIndex, GrassBiomeData[] biomes, int count)
-    {
-        int nextIndex = -1;
-        float currentMinDistance = math.max(0f, biomes[biomeIndex].DistanceRange.x);
-        float bestMinDistance = float.MaxValue;
-
-        for (int i = 0; i < count; i++)
-        {
-            float minDistance = math.max(0f, biomes[i].DistanceRange.x);
-            if (minDistance > currentMinDistance && minDistance < bestMinDistance)
-            {
-                bestMinDistance = minDistance;
-                nextIndex = i;
-            }
-        }
-
-        return nextIndex;
-    }
-
-    private static int FindNextTerrainBiomeLayerColorIndex(
-        int biomeIndex,
-        TerrainBiomeLayerColorData[] biomes,
-        int count)
-    {
-        int nextIndex = -1;
-        float currentMinDistance = math.max(0f, biomes[biomeIndex].DistanceRange.x);
-        float bestMinDistance = float.MaxValue;
-
-        for (int i = 0; i < count; i++)
-        {
-            float minDistance = math.max(0f, biomes[i].DistanceRange.x);
-            if (minDistance > currentMinDistance && minDistance < bestMinDistance)
-            {
-                bestMinDistance = minDistance;
-                nextIndex = i;
-            }
-        }
-
-        return nextIndex;
-    }
-
-    private static int FindNextBiomeIndex(int biomeIndex, NativeArray<GrassBiomeData> biomes, int count)
-    {
-        int nextIndex = -1;
-        float currentMinDistance = math.max(0f, biomes[biomeIndex].DistanceRange.x);
-        float bestMinDistance = float.MaxValue;
-
-        for (int i = 0; i < count; i++)
-        {
-            float minDistance = math.max(0f, biomes[i].DistanceRange.x);
-            if (minDistance > currentMinDistance && minDistance < bestMinDistance)
-            {
-                bestMinDistance = minDistance;
-                nextIndex = i;
-            }
-        }
-
-        return nextIndex;
     }
 
     private static float DistanceToRange(float value, float minDistance, float maxDistance)
@@ -700,12 +1230,6 @@ public partial class InfinitMeshTerrain
         }
 
         return value > maxDistance ? value - maxDistance : 0f;
-    }
-
-    private static float SmoothStep01(float edge0, float edge1, float value)
-    {
-        float t = math.saturate((value - edge0) / math.max(edge1 - edge0, 0.0001f));
-        return t * t * (3f - 2f * t);
     }
 
     private static float3 ResolveTerrainBiomeLayerColor(

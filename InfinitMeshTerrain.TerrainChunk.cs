@@ -243,22 +243,34 @@ public partial class InfinitMeshTerrain
             TerrainHeightLayer[] sortedLayers = CopySortedLayers(terrainLayers);
             Color32[] pixels0 = new Color32[resolution * resolution];
             Color32[] pixels1 = new Color32[pixels0.Length];
-            Color[] baseLayerColors = CreateLayerBaseColors(sortedLayers);
             Color32[][] biomeLayerPixels = new Color32[MaxTerrainLayerCount][];
+            int[] activeBiomeLayerChannels = Array.Empty<int>();
+            int activeBiomeLayerChannelCount = 0;
+            Color[] baseLayerColors = null;
+            int biomeColorResolution = CalculateBiomeLayerColorMapResolution(resolution);
+            int biomeLayerPixelCount = biomeColorResolution * biomeColorResolution;
             bool hasBiomeLayerData = biomeData != null && biomeData.Length > 0 && biomeSettings.Count > 0;
             if (hasBiomeLayerData)
             {
+                activeBiomeLayerChannels = new int[MaxTerrainLayerCount];
                 for (int channelIndex = 0; channelIndex < MaxTerrainLayerCount; channelIndex++)
                 {
                     if (HasTerrainBiomeLayerColorOverride(biomeData, biomeSettings, channelIndex))
                     {
-                        biomeLayerPixels[channelIndex] = new Color32[pixels0.Length];
-                        EnsureBiomeLayerColorMap(channelIndex, resolution);
+                        biomeLayerPixels[channelIndex] = new Color32[biomeLayerPixelCount];
+                        activeBiomeLayerChannels[activeBiomeLayerChannelCount++] = channelIndex;
+                        EnsureBiomeLayerColorMap(channelIndex, biomeColorResolution);
                     }
                     else
                     {
                         DestroyBiomeLayerColorMap(channelIndex);
                     }
+                }
+
+                hasBiomeLayerData = activeBiomeLayerChannelCount > 0;
+                if (hasBiomeLayerData)
+                {
+                    baseLayerColors = CreateLayerBaseColors(sortedLayers);
                 }
             }
             else
@@ -266,6 +278,10 @@ public partial class InfinitMeshTerrain
                 DestroyBiomeLayerColorMaps();
             }
 
+            int biomeLayerDataCount = hasBiomeLayerData
+                ? math.min(math.max(0, biomeSettings.Count), biomeData.Length)
+                : 0;
+            float2 chunkOriginXZ = new float2(Coord.x * chunkSize, Coord.y * chunkSize);
             for (int i = 0; i < pixels0.Length; i++)
             {
                 float height = task.Vertices[i].y;
@@ -274,26 +290,37 @@ public partial class InfinitMeshTerrain
                 pixels0[i] = ToColor32(weights.Map0);
                 pixels1[i] = ToColor32(weights.Map1);
 
-                if (hasBiomeLayerData)
+                if (!hasBiomeLayerData)
                 {
-                    Vector3 vertex = task.Vertices[i];
-                    float2 worldXZ = new float2(
-                        Coord.x * chunkSize + vertex.x,
-                        Coord.y * chunkSize + vertex.z);
-                    for (int channelIndex = 0; channelIndex < biomeLayerPixels.Length; channelIndex++)
-                    {
-                        if (biomeLayerPixels[channelIndex] == null)
-                        {
-                            continue;
-                        }
+                    continue;
+                }
 
-                        biomeLayerPixels[channelIndex][i] = ToColor32(EvaluateBiomeLayerColor(
-                            worldXZ,
-                            biomeData,
-                            biomeSettings,
+                Vector3 vertex = task.Vertices[i];
+                float2 worldXZ = chunkOriginXZ + new float2(vertex.x, vertex.z);
+                float biomeDistance = EvaluateBiomeDistance(worldXZ, biomeSettings);
+                TerrainBiomeLayerColorBlend biomeBlend = ResolveTerrainBiomeLayerColorBlend(
+                    worldXZ,
+                    biomeDistance,
+                    biomeData,
+                    biomeSettings,
+                    biomeLayerDataCount);
+
+                for (int activeIndex = 0; activeIndex < activeBiomeLayerChannelCount; activeIndex++)
+                {
+                    int channelIndex = activeBiomeLayerChannels[activeIndex];
+                    float3 layerColor = biomeBlend.PrimaryIndex >= 0
+                        ? ResolveTerrainBiomeLayerColor(biomeData[biomeBlend.PrimaryIndex], channelIndex, baseLayerColors[channelIndex])
+                        : ToFloat3(baseLayerColors[channelIndex]);
+                    if (biomeBlend.SecondaryIndex >= 0 && biomeBlend.SecondaryWeight > 0.0001f)
+                    {
+                        float3 secondaryColor = ResolveTerrainBiomeLayerColor(
+                            biomeData[biomeBlend.SecondaryIndex],
                             channelIndex,
-                            baseLayerColors[channelIndex]));
+                            baseLayerColors[channelIndex]);
+                        layerColor = math.lerp(layerColor, secondaryColor, biomeBlend.SecondaryWeight);
                     }
+
+                    biomeLayerPixels[channelIndex][i] = ToColor32(layerColor);
                 }
             }
 
@@ -415,6 +442,8 @@ public partial class InfinitMeshTerrain
                 && biomeLayerColorMap.height == resolution)
             {
                 biomeLayerColorMap.name = $"Biome Layer {channelIndex + 1} Color Map {Coord.x}, {Coord.y}";
+                biomeLayerColorMap.filterMode = FilterMode.Bilinear;
+                biomeLayerColorMap.wrapMode = TextureWrapMode.Clamp;
                 return;
             }
 

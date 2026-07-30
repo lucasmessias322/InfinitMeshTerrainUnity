@@ -19,6 +19,16 @@ struct BiomeData
 {
     float4 distanceRange;
     float4 grassColor;
+    float4 grassSettings;
+};
+
+struct BiomeGrassSample
+{
+    float3 grassColor;
+    float densityMultiplier;
+    float bladeHeightMultiplier;
+    float bladeWidthMultiplier;
+    float colorVariation;
 };
 
 StructuredBuffer<float3> _GrassSurfaceVertices;
@@ -40,10 +50,13 @@ int _GrassBiomeNoiseOctaves;
 float _GrassBiomeNoiseLacunarity;
 float _GrassBiomeNoisePersistence;
 float4 _GrassBiomeNoiseOffset;
+float _GrassBiomeSampleSpacing;
+float _GrassTerrainChunkSize;
 int _GrassTerrainSeed;
 int _GrassSeed;
 int _GrassChannel;
 float _GrassDensityPerSquareMeter;
+float _GrassMaxBiomeDensityMultiplier;
 float _GrassDetailCellSize;
 float _GrassJitter;
 int _GrassMaxInstancesPerCell;
@@ -294,25 +307,11 @@ float EvaluateCoverageNoise(float2 worldXZ)
     return lerp(1.0, saturate(noiseValue * 1.8), _GrassCoverageNoiseStrength);
 }
 
+float SampleBiomeFractalValueNoise(float2 worldXZ, int salt);
+
 float SampleBiomeNoise(float2 worldXZ)
 {
-    float frequency = max(0.000001, _GrassBiomeNoiseFrequency);
-    float amplitude = 1.0;
-    float value = 0.0;
-    float amplitudeSum = 0.0;
-    int octaveCount = min(max(_GrassBiomeNoiseOctaves, 1), 8);
-    float2 seedOffset = _GrassBiomeNoiseOffset.xy + float2(_GrassBiomeSeed * 29.37, _GrassBiomeSeed * -17.91);
-
-    [loop]
-    for (int octave = 0; octave < octaveCount; octave++)
-    {
-        value += SimplexNoise((worldXZ + seedOffset) * frequency) * amplitude;
-        amplitudeSum += amplitude;
-        amplitude *= saturate(_GrassBiomeNoisePersistence);
-        frequency *= max(1.0, _GrassBiomeNoiseLacunarity);
-    }
-
-    return amplitudeSum > 0.0001 ? value / amplitudeSum : 0.0;
+    return SampleBiomeFractalValueNoise(worldXZ, -10007);
 }
 
 float EvaluateBiomeDistance(float2 worldXZ)
@@ -326,6 +325,81 @@ float EvaluateBiomeDistance(float2 worldXZ)
     return max(0.0, distanceFromCenter + SampleBiomeNoise(worldXZ) * _GrassBiomeNoiseAmplitude);
 }
 
+float GetBiomeSelectionWeight(float4 distanceRange)
+{
+    return max(0.0, distanceRange.z);
+}
+
+int GetBiomeSeedIndex(float4 distanceRange, int fallbackIndex)
+{
+    return distanceRange.w >= 0.0 ? (int)round(distanceRange.w) : fallbackIndex;
+}
+
+uint BiomeNoiseHash(int x, int z, int seed, int salt, int octave)
+{
+    uint hash = 2166136261u;
+    hash = Mix(hash, (uint)x);
+    hash = Mix(hash, (uint)z);
+    hash = Mix(hash, (uint)seed);
+    hash = Mix(hash, (uint)salt);
+    hash = Mix(hash, (uint)octave);
+    return hash;
+}
+
+float SampleBiomeValueNoise(float2 sample, int seed, int salt, int octave)
+{
+    int x0 = (int)floor(sample.x);
+    int z0 = (int)floor(sample.y);
+    int x1 = x0 + 1;
+    int z1 = z0 + 1;
+    float2 t = float2(sample.x - x0, sample.y - z0);
+    t = t * t * (3.0 - 2.0 * t);
+
+    float v00 = Hash01(BiomeNoiseHash(x0, z0, seed, salt, octave)) * 2.0 - 1.0;
+    float v10 = Hash01(BiomeNoiseHash(x1, z0, seed, salt, octave)) * 2.0 - 1.0;
+    float v01 = Hash01(BiomeNoiseHash(x0, z1, seed, salt, octave)) * 2.0 - 1.0;
+    float v11 = Hash01(BiomeNoiseHash(x1, z1, seed, salt, octave)) * 2.0 - 1.0;
+
+    return lerp(lerp(v00, v10, t.x), lerp(v01, v11, t.x), t.y);
+}
+
+float SampleBiomeFractalValueNoise(float2 worldXZ, int salt)
+{
+    float frequency = max(0.000001, _GrassBiomeNoiseFrequency);
+    float amplitude = 1.0;
+    float value = 0.0;
+    float amplitudeSum = 0.0;
+    int octaveCount = min(max(_GrassBiomeNoiseOctaves, 1), 8);
+    float2 seedOffset = _GrassBiomeNoiseOffset.xy + float2(
+        _GrassBiomeSeed * 17.13,
+        _GrassBiomeSeed * -31.71);
+
+    [loop]
+    for (int octave = 0; octave < octaveCount; octave++)
+    {
+        value += SampleBiomeValueNoise((worldXZ + seedOffset) * frequency, _GrassBiomeSeed, salt, octave) * amplitude;
+        amplitudeSum += amplitude;
+        amplitude *= saturate(_GrassBiomeNoisePersistence);
+        frequency *= max(1.0, _GrassBiomeNoiseLacunarity);
+    }
+
+    return amplitudeSum > 0.0001 ? value / amplitudeSum : 0.0;
+}
+
+float SampleBiomeSelectionNoise(float2 worldXZ, int biomeIndex)
+{
+    return SampleBiomeFractalValueNoise(worldXZ, biomeIndex);
+}
+
+float EvaluateBiomeSelectionScore(float2 worldXZ, int biomeIndex, float selectionWeight)
+{
+    float score = _GrassBiomeUseNoise != 0
+        ? SampleBiomeSelectionNoise(worldXZ, biomeIndex)
+        : 0.0;
+    float weightBias = log(max(0.0001, selectionWeight)) * 0.35;
+    return score + weightBias + biomeIndex * 0.00001;
+}
+
 float DistanceToRange(float value, float minDistance, float maxDistance)
 {
     if (value < minDistance)
@@ -336,10 +410,26 @@ float DistanceToRange(float value, float minDistance, float maxDistance)
     return value > maxDistance ? value - maxDistance : 0.0;
 }
 
-int ResolveBiomeIndex(float biomeDistance)
+float SmoothBiomeBlend01(float value)
+{
+    float t = saturate(value);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+float GetBiomeSelectionBlendWidth()
+{
+    if (_GrassBiomeUseNoise == 0 || _GrassBiomeBlendDistance <= 0.0001)
+    {
+        return 0.0;
+    }
+
+    return clamp(_GrassBiomeBlendDistance * max(0.000001, _GrassBiomeNoiseFrequency), 0.02, 0.5);
+}
+
+int ResolveBiomeIndex(float2 worldXZ, float biomeDistance)
 {
     int biomeIndex = -1;
-    float bestMinDistance = -3.402823e38;
+    float bestScore = -3.402823e38;
     float nearestDistance = 3.402823e38;
     int nearestIndex = -1;
 
@@ -349,12 +439,10 @@ int ResolveBiomeIndex(float biomeDistance)
         BiomeData biome = _GrassBiomes[i];
         float minDistance = max(0.0, biome.distanceRange.x);
         float maxDistance = max(minDistance, biome.distanceRange.y);
-        if (biomeDistance >= minDistance
-            && biomeDistance <= maxDistance
-            && (minDistance > bestMinDistance || (abs(minDistance - bestMinDistance) <= 0.0001 && i > biomeIndex)))
+        float selectionWeight = GetBiomeSelectionWeight(biome.distanceRange);
+        if (selectionWeight <= 0.0)
         {
-            biomeIndex = i;
-            bestMinDistance = minDistance;
+            continue;
         }
 
         float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
@@ -363,93 +451,277 @@ int ResolveBiomeIndex(float biomeDistance)
             nearestDistance = distanceToRange;
             nearestIndex = i;
         }
+
+        if (distanceToRange <= 0.0001)
+        {
+            int biomeSeedIndex = GetBiomeSeedIndex(biome.distanceRange, i);
+            float score = EvaluateBiomeSelectionScore(worldXZ, biomeSeedIndex, selectionWeight);
+            if (score > bestScore || (abs(score - bestScore) <= 0.0001 && i > biomeIndex))
+            {
+                biomeIndex = i;
+                bestScore = score;
+            }
+        }
     }
 
     return biomeIndex >= 0 ? biomeIndex : nearestIndex;
 }
 
-int FindPreviousBiomeIndex(int biomeIndex)
+BiomeGrassSample CreateDefaultBiomeGrassSample(float colorVariation)
 {
-    int previousIndex = -1;
-    float currentMinDistance = max(0.0, _GrassBiomes[biomeIndex].distanceRange.x);
-    float bestMinDistance = -3.402823e38;
+    BiomeGrassSample sample;
+    sample.grassColor = float3(1.0, 1.0, 1.0);
+    sample.densityMultiplier = 1.0;
+    sample.bladeHeightMultiplier = 1.0;
+    sample.bladeWidthMultiplier = 1.0;
+    sample.colorVariation = saturate(colorVariation);
+    return sample;
+}
+
+BiomeGrassSample CreateBiomeGrassSample(BiomeData biome)
+{
+    BiomeGrassSample sample;
+    sample.grassColor = max(float3(0.0, 0.0, 0.0), biome.grassColor.rgb);
+    sample.densityMultiplier = max(0.0, biome.grassSettings.x);
+    sample.bladeHeightMultiplier = max(0.01, biome.grassSettings.y);
+    sample.bladeWidthMultiplier = max(0.01, biome.grassSettings.z);
+    sample.colorVariation = saturate(biome.grassSettings.w);
+    return sample;
+}
+
+void BlendGrassBiomeColor(inout BiomeGrassSample sample, BiomeGrassSample secondarySample, float weight)
+{
+    float blendWeight = saturate(weight);
+    sample.grassColor = lerp(sample.grassColor, secondarySample.grassColor, blendWeight);
+    sample.colorVariation = lerp(sample.colorVariation, secondarySample.colorVariation, blendWeight);
+}
+
+void TrackGrassBiomeCandidate(
+    float2 worldXZ,
+    float biomeDistance,
+    int candidateIndex,
+    float4 distanceRange,
+    float blendDistance,
+    inout int primaryIndex,
+    inout float bestScore,
+    inout int secondaryIndex,
+    inout float secondScore,
+    inout int nearestIndex,
+    inout float nearestDistance,
+    inout int nearestTransitionIndex,
+    inout float nearestTransitionDistance)
+{
+    float minDistance = max(0.0, distanceRange.x);
+    float maxDistance = max(minDistance, distanceRange.y);
+    float selectionWeight = GetBiomeSelectionWeight(distanceRange);
+    if (selectionWeight <= 0.0)
+    {
+        return;
+    }
+
+    float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
+    if (distanceToRange < nearestDistance)
+    {
+        nearestDistance = distanceToRange;
+        nearestIndex = candidateIndex;
+    }
+
+    if (distanceToRange <= 0.0001)
+    {
+        int biomeSeedIndex = GetBiomeSeedIndex(distanceRange, candidateIndex);
+        float score = EvaluateBiomeSelectionScore(worldXZ, biomeSeedIndex, selectionWeight);
+        if (score > bestScore || (abs(score - bestScore) <= 0.0001 && candidateIndex > primaryIndex))
+        {
+            secondaryIndex = primaryIndex;
+            secondScore = bestScore;
+            primaryIndex = candidateIndex;
+            bestScore = score;
+        }
+        else if (score > secondScore || (abs(score - secondScore) <= 0.0001 && candidateIndex > secondaryIndex))
+        {
+            secondaryIndex = candidateIndex;
+            secondScore = score;
+        }
+    }
+    else if (blendDistance > 0.0001
+        && distanceToRange < nearestTransitionDistance
+        && distanceToRange <= blendDistance)
+    {
+        nearestTransitionDistance = distanceToRange;
+        nearestTransitionIndex = candidateIndex;
+    }
+}
+
+void ApplySmoothBiomeGrassColor(
+    inout BiomeGrassSample sample,
+    int colorPrimaryIndex,
+    int colorSecondaryIndex,
+    float colorSecondScore,
+    float colorBestScore,
+    int colorNearestIndex,
+    int colorNearestTransitionIndex,
+    float colorNearestTransitionDistance,
+    float blendDistance)
+{
+    int primaryIndex = colorPrimaryIndex;
+    if (primaryIndex < 0)
+    {
+        primaryIndex = colorNearestIndex;
+    }
+
+    if (primaryIndex < 0)
+    {
+        return;
+    }
+
+    BiomeGrassSample colorSample = CreateBiomeGrassSample(_GrassBiomes[primaryIndex]);
+    sample.grassColor = colorSample.grassColor;
+    sample.colorVariation = colorSample.colorVariation;
+
+    int blendIndex = -1;
+    float blendWeight = 0.0;
+    if (blendDistance > 0.0001 && colorSecondaryIndex >= 0)
+    {
+        float selectionBlendWidth = GetBiomeSelectionBlendWidth();
+        if (selectionBlendWidth > 0.0001)
+        {
+            float scoreGap = max(0.0, colorBestScore - colorSecondScore);
+            float scoreBlend = 0.5 - scoreGap / (selectionBlendWidth * 2.0);
+            if (scoreBlend > blendWeight)
+            {
+                blendIndex = colorSecondaryIndex;
+                blendWeight = saturate(scoreBlend);
+            }
+        }
+    }
+
+    if (blendDistance > 0.0001
+        && colorNearestTransitionIndex >= 0
+        && colorNearestTransitionIndex != primaryIndex)
+    {
+        float t = saturate(colorNearestTransitionDistance / blendDistance);
+        float rangeBlend = (1.0 - SmoothBiomeBlend01(t)) * 0.5;
+        if (rangeBlend > blendWeight)
+        {
+            blendIndex = colorNearestTransitionIndex;
+            blendWeight = rangeBlend;
+        }
+    }
+
+    if (blendIndex >= 0 && blendWeight > 0.0001)
+    {
+        BlendGrassBiomeColor(sample, CreateBiomeGrassSample(_GrassBiomes[blendIndex]), blendWeight);
+    }
+}
+
+BiomeGrassSample ResolveBiomeGrassSample(
+    float2 placementWorldXZ,
+    float placementBiomeDistance,
+    float2 colorWorldXZ,
+    float colorBiomeDistance)
+{
+    int placementPrimaryIndex = -1;
+    int placementSecondaryIndex = -1;
+    float placementBestScore = -3.402823e38;
+    float placementSecondScore = -3.402823e38;
+    float placementNearestDistance = 3.402823e38;
+    int placementNearestIndex = -1;
+    float placementNearestTransitionDistance = 3.402823e38;
+    int placementNearestTransitionIndex = -1;
+    int colorPrimaryIndex = -1;
+    int colorSecondaryIndex = -1;
+    float colorBestScore = -3.402823e38;
+    float colorSecondScore = -3.402823e38;
+    float colorNearestDistance = 3.402823e38;
+    int colorNearestIndex = -1;
+    float colorNearestTransitionDistance = 3.402823e38;
+    int colorNearestTransitionIndex = -1;
+    float blendDistance = max(0.0, _GrassBiomeBlendDistance);
 
     [loop]
     for (int i = 0; i < _GrassBiomeCount; i++)
     {
-        float minDistance = max(0.0, _GrassBiomes[i].distanceRange.x);
-        if (minDistance < currentMinDistance && minDistance > bestMinDistance)
-        {
-            bestMinDistance = minDistance;
-            previousIndex = i;
-        }
+        float4 distanceRange = _GrassBiomes[i].distanceRange;
+        TrackGrassBiomeCandidate(
+            placementWorldXZ,
+            placementBiomeDistance,
+            i,
+            distanceRange,
+            0.0,
+            placementPrimaryIndex,
+            placementBestScore,
+            placementSecondaryIndex,
+            placementSecondScore,
+            placementNearestIndex,
+            placementNearestDistance,
+            placementNearestTransitionIndex,
+            placementNearestTransitionDistance);
+        TrackGrassBiomeCandidate(
+            colorWorldXZ,
+            colorBiomeDistance,
+            i,
+            distanceRange,
+            blendDistance,
+            colorPrimaryIndex,
+            colorBestScore,
+            colorSecondaryIndex,
+            colorSecondScore,
+            colorNearestIndex,
+            colorNearestDistance,
+            colorNearestTransitionIndex,
+            colorNearestTransitionDistance);
     }
 
-    return previousIndex;
-}
-
-int FindNextBiomeIndex(int biomeIndex)
-{
-    int nextIndex = -1;
-    float currentMinDistance = max(0.0, _GrassBiomes[biomeIndex].distanceRange.x);
-    float bestMinDistance = 3.402823e38;
-
-    [loop]
-    for (int i = 0; i < _GrassBiomeCount; i++)
+    if (placementPrimaryIndex < 0)
     {
-        float minDistance = max(0.0, _GrassBiomes[i].distanceRange.x);
-        if (minDistance > currentMinDistance && minDistance < bestMinDistance)
-        {
-            bestMinDistance = minDistance;
-            nextIndex = i;
-        }
+        placementPrimaryIndex = placementNearestIndex;
     }
 
-    return nextIndex;
+    if (placementPrimaryIndex < 0)
+    {
+        return CreateDefaultBiomeGrassSample(0.0);
+    }
+
+    BiomeGrassSample sample = CreateBiomeGrassSample(_GrassBiomes[placementPrimaryIndex]);
+    ApplySmoothBiomeGrassColor(
+        sample,
+        colorPrimaryIndex,
+        colorSecondaryIndex,
+        colorSecondScore,
+        colorBestScore,
+        colorNearestIndex,
+        colorNearestTransitionIndex,
+        colorNearestTransitionDistance,
+        blendDistance);
+    return sample;
 }
 
-float3 EvaluateBiomeGrassColor(float2 worldXZ)
+float2 QuantizeBiomeGrassWorldXZ(float2 worldXZ)
+{
+    if (_GrassTerrainChunkSize <= 0.0001 || _GrassBiomeSampleSpacing <= 0.0001)
+    {
+        return worldXZ;
+    }
+
+    float2 chunkCoord = floor(worldXZ / _GrassTerrainChunkSize);
+    float2 chunkOrigin = chunkCoord * _GrassTerrainChunkSize;
+    float2 local = worldXZ - chunkOrigin;
+    return chunkOrigin + round(local / _GrassBiomeSampleSpacing) * _GrassBiomeSampleSpacing;
+}
+
+BiomeGrassSample EvaluateBiomeGrassSample(float2 worldXZ)
 {
     if (_GrassBiomeCount <= 0)
     {
-        return float3(1.0, 1.0, 1.0);
+        return CreateDefaultBiomeGrassSample(0.0);
     }
 
-    float biomeDistance = EvaluateBiomeDistance(worldXZ);
-    int biomeIndex = ResolveBiomeIndex(biomeDistance);
-    if (biomeIndex < 0)
-    {
-        return float3(1.0, 1.0, 1.0);
-    }
-
-    BiomeData biome = _GrassBiomes[biomeIndex];
-    float3 grassColor = max(float3(0.0, 0.0, 0.0), biome.grassColor.rgb);
-    float blendDistance = max(0.0, _GrassBiomeBlendDistance);
-    if (blendDistance <= 0.0001)
-    {
-        return grassColor;
-    }
-
-    float minDistance = max(0.0, biome.distanceRange.x);
-    int previousIndex = FindPreviousBiomeIndex(biomeIndex);
-    if (previousIndex >= 0 && minDistance > 0.0 && biomeDistance <= minDistance + blendDistance)
-    {
-        float t = SmoothStep01(minDistance - blendDistance, minDistance + blendDistance, biomeDistance);
-        return lerp(max(float3(0.0, 0.0, 0.0), _GrassBiomes[previousIndex].grassColor.rgb), grassColor, t);
-    }
-
-    int nextIndex = FindNextBiomeIndex(biomeIndex);
-    if (nextIndex >= 0)
-    {
-        float nextMinDistance = max(0.0, _GrassBiomes[nextIndex].distanceRange.x);
-        if (biomeDistance >= nextMinDistance - blendDistance)
-        {
-            float t = SmoothStep01(nextMinDistance - blendDistance, nextMinDistance + blendDistance, biomeDistance);
-            grassColor = lerp(grassColor, max(float3(0.0, 0.0, 0.0), _GrassBiomes[nextIndex].grassColor.rgb), t);
-        }
-    }
-
-    return grassColor;
+    float2 placementWorldXZ = QuantizeBiomeGrassWorldXZ(worldXZ);
+    float placementBiomeDistance = EvaluateBiomeDistance(placementWorldXZ);
+    float colorBiomeDistance = _GrassBiomeBlendDistance > 0.0001
+        ? EvaluateBiomeDistance(worldXZ)
+        : placementBiomeDistance;
+    return ResolveBiomeGrassSample(placementWorldXZ, placementBiomeDistance, worldXZ, colorBiomeDistance);
 }
 
 void SampleSurface(float2 local, out float3 positionWS, out float3 normalWS)
@@ -505,7 +777,9 @@ void GenerateGrassInstances(uint3 id : SV_DispatchThreadID)
     }
 
     float cellSize = _GrassChunkSize / max(1, _GrassCellsPerAxis);
-    float expectedPerCell = _GrassDensityPerSquareMeter * cellSize * cellSize;
+    bool hasBiomes = _GrassBiomeCount > 0;
+    float densityCapacityMultiplier = hasBiomes ? max(0.0, _GrassMaxBiomeDensityMultiplier) : 1.0;
+    float expectedPerCell = _GrassDensityPerSquareMeter * densityCapacityMultiplier * cellSize * cellSize;
     if (expectedPerCell <= 0.0)
     {
         return;
@@ -537,11 +811,21 @@ void GenerateGrassInstances(uint3 id : SV_DispatchThreadID)
         float3 normalWS;
         SampleSurface(local, positionWS, normalWS);
 
+        BiomeGrassSample biomeGrass = CreateDefaultBiomeGrassSample(_GrassColorVariation);
+        if (hasBiomes)
+        {
+            biomeGrass = EvaluateBiomeGrassSample(positionWS.xz);
+        }
         float slopeAngle = acos(clamp(normalWS.y, -1.0, 1.0)) * 57.29578;
         float coverage = EvaluateLayerCoverage(positionWS.y, slopeAngle);
         coverage *= EvaluateHeightGate(positionWS.y);
         coverage *= EvaluateSlopeGate(slopeAngle);
         coverage *= EvaluateCoverageNoise(positionWS.xz);
+        if (hasBiomes)
+        {
+            coverage *= saturate(biomeGrass.densityMultiplier / max(0.0001, densityCapacityMultiplier));
+        }
+
         coverage = saturate(coverage);
 
         if (coverage <= 0.0 || Hash01(instanceHash + 0x3c6ef372u) > coverage)
@@ -556,20 +840,15 @@ void GenerateGrassInstances(uint3 id : SV_DispatchThreadID)
             continue;
         }
 
-        float bladeHeight = _GrassBladeHeight * max(
+        float bladeHeight = _GrassBladeHeight * biomeGrass.bladeHeightMultiplier * max(
             0.05,
             1.0 + (Hash01(instanceHash + 0xa54ff53au) * 2.0 - 1.0) * _GrassBladeHeightVariation);
-        float bladeWidth = _GrassBladeWidth * max(
+        float bladeWidth = _GrassBladeWidth * biomeGrass.bladeWidthMultiplier * max(
             0.05,
             1.0 + (Hash01(instanceHash + 0x510e527fu) * 2.0 - 1.0) * _GrassBladeWidthVariation);
         float yaw = Hash01(instanceHash + 0x1f83d9abu) * 6.2831855;
-        float colorScale = _GrassBiomeCount > 0
-            ? 1.0
-            : 1.0 + (Hash01(instanceHash + 0x5be0cd19u) * 2.0 - 1.0) * _GrassColorVariation;
-        float3 grassColor = _GrassBiomeCount > 0
-            ? EvaluateBiomeGrassColor(positionWS.xz)
-            : float3(1.0, 1.0, 1.0);
-        float3 instanceColor = max(float3(0.0, 0.0, 0.0), grassColor * colorScale);
+        float colorScale = 1.0 + (Hash01(instanceHash + 0x5be0cd19u) * 2.0 - 1.0) * biomeGrass.colorVariation;
+        float3 instanceColor = max(float3(0.0, 0.0, 0.0), biomeGrass.grassColor * colorScale);
         float3 instanceNormal = normalize(lerp(float3(0.0, 1.0, 0.0), normalWS, _GrassNormalAlignment));
         positionWS.y += _GrassSurfaceOffset;
 

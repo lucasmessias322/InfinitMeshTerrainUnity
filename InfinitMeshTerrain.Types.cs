@@ -155,6 +155,16 @@ public partial class InfinitMeshTerrain
     {
         public float4 DistanceRange;
         public float4 GrassColor;
+        public float4 GrassSettings;
+    }
+
+    private struct GrassBiomeSample
+    {
+        public float3 GrassColor;
+        public float DensityMultiplier;
+        public float BladeHeightMultiplier;
+        public float BladeWidthMultiplier;
+        public float ColorVariation;
     }
 
     private struct BiomeSamplingSettings
@@ -169,6 +179,8 @@ public partial class InfinitMeshTerrain
         public float NoiseLacunarity;
         public float NoisePersistence;
         public float2 NoiseOffset;
+        public float TerrainChunkSize;
+        public float BiomeSampleSpacing;
     }
 
     private sealed class TerrainBiomeLayerColorData
@@ -176,6 +188,13 @@ public partial class InfinitMeshTerrain
         public float4 DistanceRange;
         public bool[] HasLayerColor;
         public Color[] LayerColors;
+    }
+
+    private struct TerrainBiomeLayerColorBlend
+    {
+        public int PrimaryIndex;
+        public int SecondaryIndex;
+        public float SecondaryWeight;
     }
 
     private struct GrassBuildSettings
@@ -199,6 +218,9 @@ public partial class InfinitMeshTerrain
         public float BladeWidth;
         public float BladeWidthVariation;
         public float ColorVariation;
+        public float MaxBiomeDensityMultiplier;
+        public float MaxBiomeBladeHeightMultiplier;
+        public float MaxBiomeBladeWidthMultiplier;
         public float NormalAlignment;
         public float SurfaceOffset;
         public float CoverageNoiseFrequency;
