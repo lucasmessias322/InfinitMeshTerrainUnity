@@ -1,0 +1,592 @@
+#pragma kernel GenerateGrassInstances
+#pragma kernel FinalizeGrassArgs
+
+struct GrassInstance
+{
+    float4 positionScale;
+    float4 normalYaw;
+    float4 colorWidth;
+};
+
+struct GrassTerrainLayer
+{
+    int channel;
+    float startHeight;
+    float blendRange;
+};
+
+struct BiomeData
+{
+    float4 distanceRange;
+    float4 grassColor;
+};
+
+StructuredBuffer<float3> _GrassSurfaceVertices;
+StructuredBuffer<float3> _GrassSurfaceNormals;
+StructuredBuffer<GrassTerrainLayer> _GrassTerrainLayers;
+StructuredBuffer<BiomeData> _GrassBiomes;
+RWStructuredBuffer<GrassInstance> _GrassInstances;
+RWStructuredBuffer<uint> _GrassCounter;
+RWStructuredBuffer<uint> _GrassArgs;
+
+int _GrassTerrainLayerCount;
+int _GrassBiomeCount;
+int _GrassBiomeSeed;
+int _GrassBiomeUseNoise;
+float _GrassBiomeBlendDistance;
+float _GrassBiomeNoiseAmplitude;
+float _GrassBiomeNoiseFrequency;
+int _GrassBiomeNoiseOctaves;
+float _GrassBiomeNoiseLacunarity;
+float _GrassBiomeNoisePersistence;
+float4 _GrassBiomeNoiseOffset;
+int _GrassTerrainSeed;
+int _GrassSeed;
+int _GrassChannel;
+float _GrassDensityPerSquareMeter;
+float _GrassDetailCellSize;
+float _GrassJitter;
+int _GrassMaxInstancesPerCell;
+float _GrassLayerThreshold;
+float _GrassMinHeight;
+float _GrassMaxHeight;
+float _GrassHeightFadeRange;
+float _GrassMinSlopeAngle;
+float _GrassMaxSlopeAngle;
+float _GrassSlopeFadeRange;
+float _GrassBladeHeight;
+float _GrassBladeHeightVariation;
+float _GrassBladeWidth;
+float _GrassBladeWidthVariation;
+float _GrassColorVariation;
+float _GrassNormalAlignment;
+float _GrassSurfaceOffset;
+float _GrassCoverageNoiseFrequency;
+float _GrassCoverageNoiseStrength;
+int _GrassChunkCoordX;
+int _GrassChunkCoordZ;
+float4 _GrassChunkOrigin;
+float _GrassChunkSize;
+int _GrassResolution;
+int _GrassCellsPerAxis;
+int _GrassCapacity;
+int _GrassSlopeEnabled;
+int _GrassSlopeChannel;
+float _GrassSlopeStartAngle;
+float _GrassSlopeFullAngle;
+float _GrassSlopeStrength;
+int _GrassDrawIndexCount;
+int _GrassDrawStartIndex;
+int _GrassDrawBaseVertex;
+
+uint Mix(uint hash, uint value)
+{
+    hash ^= value;
+    hash *= 16777619u;
+    return hash;
+}
+
+uint Hash(uint value)
+{
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
+}
+
+uint Hash6(int a, int b, int c, int d, int e, int f)
+{
+    uint hash = 2166136261u;
+    hash = Mix(hash, (uint)a);
+    hash = Mix(hash, (uint)b);
+    hash = Mix(hash, (uint)c);
+    hash = Mix(hash, (uint)d);
+    hash = Mix(hash, (uint)e);
+    hash = Mix(hash, (uint)f);
+    return Hash(hash);
+}
+
+float Hash01(uint value)
+{
+    return (Hash(value) >> 8) * (1.0 / 16777216.0);
+}
+
+float SmoothStep01(float edge0, float edge1, float value)
+{
+    float t = saturate((value - edge0) / max(edge1 - edge0, 0.0001));
+    return t * t * (3.0 - 2.0 * t);
+}
+
+float2 Mod289(float2 x)
+{
+    return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+float3 Mod289(float3 x)
+{
+    return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+float3 Permute(float3 x)
+{
+    return Mod289(((x * 34.0) + 10.0) * x);
+}
+
+float SimplexNoise(float2 v)
+{
+    const float4 C = float4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+    float2 i = floor(v + dot(v, C.yy));
+    float2 x0 = v - i + dot(i, C.xx);
+    float2 i1 = x0.x > x0.y ? float2(1.0, 0.0) : float2(0.0, 1.0);
+    float4 x12 = x0.xyxy + C.xxzz;
+    x12.xy -= i1;
+    i = Mod289(i);
+    float3 p = Permute(Permute(i.y + float3(0.0, i1.y, 1.0)) + i.x + float3(0.0, i1.x, 1.0));
+    float3 m = max(0.5 - float3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+    m = m * m;
+    m = m * m;
+    float3 x = 2.0 * frac(p * C.www) - 1.0;
+    float3 h = abs(x) - 0.5;
+    float3 ox = floor(x + 0.5);
+    float3 a0 = x - ox;
+    m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+    float3 g;
+    g.x = a0.x * x0.x + h.x * x0.y;
+    g.y = a0.y * x12.x + h.y * x12.y;
+    g.z = a0.z * x12.z + h.z * x12.w;
+    return 130.0 * dot(m, g);
+}
+
+void AddWeight(inout float4 map0, inout float4 map1, int channel, float value)
+{
+    switch (channel)
+    {
+        case 1:
+            map0.y += value;
+            break;
+        case 2:
+            map0.z += value;
+            break;
+        case 3:
+            map0.w += value;
+            break;
+        case 4:
+            map1.x += value;
+            break;
+        case 5:
+            map1.y += value;
+            break;
+        case 6:
+            map1.z += value;
+            break;
+        case 7:
+            map1.w += value;
+            break;
+        default:
+            map0.x += value;
+            break;
+    }
+}
+
+float ReadWeight(float4 map0, float4 map1, int channel)
+{
+    switch (channel)
+    {
+        case 1:
+            return map0.y;
+        case 2:
+            return map0.z;
+        case 3:
+            return map0.w;
+        case 4:
+            return map1.x;
+        case 5:
+            return map1.y;
+        case 6:
+            return map1.z;
+        case 7:
+            return map1.w;
+        default:
+            return map0.x;
+    }
+}
+
+void NormalizeWeights(inout float4 map0, inout float4 map1)
+{
+    float sum = map0.x + map0.y + map0.z + map0.w + map1.x + map1.y + map1.z + map1.w;
+    if (sum > 0.0001)
+    {
+        map0 /= sum;
+        map1 /= sum;
+    }
+}
+
+float EvaluateSplatWeight(float height, float slopeAngle, int channel)
+{
+    if (_GrassTerrainLayerCount <= 0)
+    {
+        return channel == 0 ? 1.0 : 0.0;
+    }
+
+    float4 map0 = 0.0;
+    float4 map1 = 0.0;
+    AddWeight(map0, map1, _GrassTerrainLayers[0].channel, 1.0);
+
+    [loop]
+    for (int i = 1; i < _GrassTerrainLayerCount; i++)
+    {
+        GrassTerrainLayer layer = _GrassTerrainLayers[i];
+        float blend = SmoothStep01(layer.startHeight, layer.startHeight + max(0.0001, layer.blendRange), height);
+        map0 *= 1.0 - blend;
+        map1 *= 1.0 - blend;
+        AddWeight(map0, map1, layer.channel, blend);
+    }
+
+    NormalizeWeights(map0, map1);
+
+    if (_GrassSlopeEnabled != 0)
+    {
+        float slopeBlend = SmoothStep01(_GrassSlopeStartAngle, _GrassSlopeFullAngle, slopeAngle);
+        float rockAmount = saturate(slopeBlend * _GrassSlopeStrength);
+        if (rockAmount > 0.0001)
+        {
+            map0 *= 1.0 - rockAmount;
+            map1 *= 1.0 - rockAmount;
+            AddWeight(map0, map1, _GrassSlopeChannel, rockAmount);
+            NormalizeWeights(map0, map1);
+        }
+    }
+
+    return ReadWeight(map0, map1, channel);
+}
+
+float EvaluateLayerCoverage(float height, float slopeAngle)
+{
+    float weight = EvaluateSplatWeight(height, slopeAngle, _GrassChannel);
+    return saturate((weight - _GrassLayerThreshold) / max(1.0 - _GrassLayerThreshold, 0.0001));
+}
+
+float EvaluateHeightGate(float height)
+{
+    float lower = SmoothStep01(_GrassMinHeight, _GrassMinHeight + _GrassHeightFadeRange, height);
+    float upper = 1.0 - SmoothStep01(_GrassMaxHeight - _GrassHeightFadeRange, _GrassMaxHeight, height);
+    return saturate(lower * upper);
+}
+
+float EvaluateSlopeGate(float slopeAngle)
+{
+    float lower = SmoothStep01(_GrassMinSlopeAngle - _GrassSlopeFadeRange, _GrassMinSlopeAngle, slopeAngle);
+    float upper = 1.0 - SmoothStep01(_GrassMaxSlopeAngle, _GrassMaxSlopeAngle + _GrassSlopeFadeRange, slopeAngle);
+    return saturate(lower * upper);
+}
+
+float EvaluateCoverageNoise(float2 worldXZ)
+{
+    if (_GrassCoverageNoiseFrequency <= 0.0 || _GrassCoverageNoiseStrength <= 0.0)
+    {
+        return 1.0;
+    }
+
+    float2 seedOffset = float2(_GrassSeed * 11.17, _GrassSeed * -7.31);
+    float noiseValue = saturate(SimplexNoise((worldXZ + seedOffset) * _GrassCoverageNoiseFrequency) * 0.5 + 0.5);
+    return lerp(1.0, saturate(noiseValue * 1.8), _GrassCoverageNoiseStrength);
+}
+
+float SampleBiomeNoise(float2 worldXZ)
+{
+    float frequency = max(0.000001, _GrassBiomeNoiseFrequency);
+    float amplitude = 1.0;
+    float value = 0.0;
+    float amplitudeSum = 0.0;
+    int octaveCount = min(max(_GrassBiomeNoiseOctaves, 1), 8);
+    float2 seedOffset = _GrassBiomeNoiseOffset.xy + float2(_GrassBiomeSeed * 29.37, _GrassBiomeSeed * -17.91);
+
+    [loop]
+    for (int octave = 0; octave < octaveCount; octave++)
+    {
+        value += SimplexNoise((worldXZ + seedOffset) * frequency) * amplitude;
+        amplitudeSum += amplitude;
+        amplitude *= saturate(_GrassBiomeNoisePersistence);
+        frequency *= max(1.0, _GrassBiomeNoiseLacunarity);
+    }
+
+    return amplitudeSum > 0.0001 ? value / amplitudeSum : 0.0;
+}
+
+float EvaluateBiomeDistance(float2 worldXZ)
+{
+    float distanceFromCenter = length(worldXZ);
+    if (_GrassBiomeUseNoise == 0 || _GrassBiomeNoiseAmplitude <= 0.0 || _GrassBiomeNoiseFrequency <= 0.0)
+    {
+        return distanceFromCenter;
+    }
+
+    return max(0.0, distanceFromCenter + SampleBiomeNoise(worldXZ) * _GrassBiomeNoiseAmplitude);
+}
+
+float DistanceToRange(float value, float minDistance, float maxDistance)
+{
+    if (value < minDistance)
+    {
+        return minDistance - value;
+    }
+
+    return value > maxDistance ? value - maxDistance : 0.0;
+}
+
+int ResolveBiomeIndex(float biomeDistance)
+{
+    int biomeIndex = -1;
+    float bestMinDistance = -3.402823e38;
+    float nearestDistance = 3.402823e38;
+    int nearestIndex = -1;
+
+    [loop]
+    for (int i = 0; i < _GrassBiomeCount; i++)
+    {
+        BiomeData biome = _GrassBiomes[i];
+        float minDistance = max(0.0, biome.distanceRange.x);
+        float maxDistance = max(minDistance, biome.distanceRange.y);
+        if (biomeDistance >= minDistance
+            && biomeDistance <= maxDistance
+            && (minDistance > bestMinDistance || (abs(minDistance - bestMinDistance) <= 0.0001 && i > biomeIndex)))
+        {
+            biomeIndex = i;
+            bestMinDistance = minDistance;
+        }
+
+        float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
+        if (distanceToRange < nearestDistance)
+        {
+            nearestDistance = distanceToRange;
+            nearestIndex = i;
+        }
+    }
+
+    return biomeIndex >= 0 ? biomeIndex : nearestIndex;
+}
+
+int FindPreviousBiomeIndex(int biomeIndex)
+{
+    int previousIndex = -1;
+    float currentMinDistance = max(0.0, _GrassBiomes[biomeIndex].distanceRange.x);
+    float bestMinDistance = -3.402823e38;
+
+    [loop]
+    for (int i = 0; i < _GrassBiomeCount; i++)
+    {
+        float minDistance = max(0.0, _GrassBiomes[i].distanceRange.x);
+        if (minDistance < currentMinDistance && minDistance > bestMinDistance)
+        {
+            bestMinDistance = minDistance;
+            previousIndex = i;
+        }
+    }
+
+    return previousIndex;
+}
+
+int FindNextBiomeIndex(int biomeIndex)
+{
+    int nextIndex = -1;
+    float currentMinDistance = max(0.0, _GrassBiomes[biomeIndex].distanceRange.x);
+    float bestMinDistance = 3.402823e38;
+
+    [loop]
+    for (int i = 0; i < _GrassBiomeCount; i++)
+    {
+        float minDistance = max(0.0, _GrassBiomes[i].distanceRange.x);
+        if (minDistance > currentMinDistance && minDistance < bestMinDistance)
+        {
+            bestMinDistance = minDistance;
+            nextIndex = i;
+        }
+    }
+
+    return nextIndex;
+}
+
+float3 EvaluateBiomeGrassColor(float2 worldXZ)
+{
+    if (_GrassBiomeCount <= 0)
+    {
+        return float3(1.0, 1.0, 1.0);
+    }
+
+    float biomeDistance = EvaluateBiomeDistance(worldXZ);
+    int biomeIndex = ResolveBiomeIndex(biomeDistance);
+    if (biomeIndex < 0)
+    {
+        return float3(1.0, 1.0, 1.0);
+    }
+
+    BiomeData biome = _GrassBiomes[biomeIndex];
+    float3 grassColor = max(float3(0.0, 0.0, 0.0), biome.grassColor.rgb);
+    float blendDistance = max(0.0, _GrassBiomeBlendDistance);
+    if (blendDistance <= 0.0001)
+    {
+        return grassColor;
+    }
+
+    float minDistance = max(0.0, biome.distanceRange.x);
+    int previousIndex = FindPreviousBiomeIndex(biomeIndex);
+    if (previousIndex >= 0 && minDistance > 0.0 && biomeDistance <= minDistance + blendDistance)
+    {
+        float t = SmoothStep01(minDistance - blendDistance, minDistance + blendDistance, biomeDistance);
+        return lerp(max(float3(0.0, 0.0, 0.0), _GrassBiomes[previousIndex].grassColor.rgb), grassColor, t);
+    }
+
+    int nextIndex = FindNextBiomeIndex(biomeIndex);
+    if (nextIndex >= 0)
+    {
+        float nextMinDistance = max(0.0, _GrassBiomes[nextIndex].distanceRange.x);
+        if (biomeDistance >= nextMinDistance - blendDistance)
+        {
+            float t = SmoothStep01(nextMinDistance - blendDistance, nextMinDistance + blendDistance, biomeDistance);
+            grassColor = lerp(grassColor, max(float3(0.0, 0.0, 0.0), _GrassBiomes[nextIndex].grassColor.rgb), t);
+        }
+    }
+
+    return grassColor;
+}
+
+void SampleSurface(float2 local, out float3 positionWS, out float3 normalWS)
+{
+    float u = saturate(local.x / _GrassChunkSize);
+    float v = saturate(local.y / _GrassChunkSize);
+    float gridX = u * (_GrassResolution - 1);
+    float gridZ = v * (_GrassResolution - 1);
+    int x0 = clamp((int)floor(gridX), 0, _GrassResolution - 1);
+    int z0 = clamp((int)floor(gridZ), 0, _GrassResolution - 1);
+    int x1 = min(x0 + 1, _GrassResolution - 1);
+    int z1 = min(z0 + 1, _GrassResolution - 1);
+    float tx = gridX - x0;
+    float tz = gridZ - z0;
+
+    int i00 = z0 * _GrassResolution + x0;
+    int i10 = z0 * _GrassResolution + x1;
+    int i01 = z1 * _GrassResolution + x0;
+    int i11 = z1 * _GrassResolution + x1;
+
+    float h00 = _GrassSurfaceVertices[i00].y;
+    float h10 = _GrassSurfaceVertices[i10].y;
+    float h01 = _GrassSurfaceVertices[i01].y;
+    float h11 = _GrassSurfaceVertices[i11].y;
+    float height0 = lerp(h00, h10, tx);
+    float height1 = lerp(h01, h11, tx);
+    float surfaceHeight = lerp(height0, height1, tz);
+
+    float3 n00 = _GrassSurfaceNormals[i00];
+    float3 n10 = _GrassSurfaceNormals[i10];
+    float3 n01 = _GrassSurfaceNormals[i01];
+    float3 n11 = _GrassSurfaceNormals[i11];
+    float3 normal0 = lerp(n00, n10, tx);
+    float3 normal1 = lerp(n01, n11, tx);
+    normalWS = normalize(lerp(normal0, normal1, tz));
+    if (dot(normalWS, normalWS) < 0.0001)
+    {
+        normalWS = float3(0.0, 1.0, 0.0);
+    }
+
+    positionWS = float3(_GrassChunkOrigin.x + local.x, surfaceHeight, _GrassChunkOrigin.y + local.y);
+}
+
+[numthreads(8, 8, 1)]
+void GenerateGrassInstances(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_GrassCellsPerAxis
+        || id.y >= (uint)_GrassCellsPerAxis
+        || _GrassCapacity <= 0
+        || _GrassResolution < 2)
+    {
+        return;
+    }
+
+    float cellSize = _GrassChunkSize / max(1, _GrassCellsPerAxis);
+    float expectedPerCell = _GrassDensityPerSquareMeter * cellSize * cellSize;
+    if (expectedPerCell <= 0.0)
+    {
+        return;
+    }
+
+    int x = (int)id.x;
+    int z = (int)id.y;
+    uint cellHash = Hash6(_GrassChunkCoordX, _GrassChunkCoordZ, x, z, _GrassTerrainSeed, _GrassSeed);
+    int candidateCount = (int)floor(expectedPerCell);
+    float fractional = expectedPerCell - candidateCount;
+    if (Hash01(cellHash + 0x6d2b79f5u) < fractional)
+    {
+        candidateCount++;
+    }
+
+    candidateCount = min(candidateCount, _GrassMaxInstancesPerCell);
+    [loop]
+    for (int candidate = 0; candidate < candidateCount; candidate++)
+    {
+        uint instanceHash = Hash6((int)cellHash, candidate, x * 73856093, z * 19349663, _GrassSeed, _GrassTerrainSeed);
+        float2 jitter = float2(
+            Hash01(instanceHash + 0x9e3779b9u),
+            Hash01(instanceHash + 0xbb67ae85u));
+        float2 centeredJitter = (jitter - 0.5) * _GrassJitter + 0.5;
+        float2 local = (float2(x, z) + centeredJitter) * cellSize;
+        local = clamp(local, float2(0.001, 0.001), float2(_GrassChunkSize - 0.001, _GrassChunkSize - 0.001));
+
+        float3 positionWS;
+        float3 normalWS;
+        SampleSurface(local, positionWS, normalWS);
+
+        float slopeAngle = acos(clamp(normalWS.y, -1.0, 1.0)) * 57.29578;
+        float coverage = EvaluateLayerCoverage(positionWS.y, slopeAngle);
+        coverage *= EvaluateHeightGate(positionWS.y);
+        coverage *= EvaluateSlopeGate(slopeAngle);
+        coverage *= EvaluateCoverageNoise(positionWS.xz);
+        coverage = saturate(coverage);
+
+        if (coverage <= 0.0 || Hash01(instanceHash + 0x3c6ef372u) > coverage)
+        {
+            continue;
+        }
+
+        uint writeIndex;
+        InterlockedAdd(_GrassCounter[0], 1u, writeIndex);
+        if (writeIndex >= (uint)_GrassCapacity)
+        {
+            continue;
+        }
+
+        float bladeHeight = _GrassBladeHeight * max(
+            0.05,
+            1.0 + (Hash01(instanceHash + 0xa54ff53au) * 2.0 - 1.0) * _GrassBladeHeightVariation);
+        float bladeWidth = _GrassBladeWidth * max(
+            0.05,
+            1.0 + (Hash01(instanceHash + 0x510e527fu) * 2.0 - 1.0) * _GrassBladeWidthVariation);
+        float yaw = Hash01(instanceHash + 0x1f83d9abu) * 6.2831855;
+        float colorScale = 1.0 + (Hash01(instanceHash + 0x5be0cd19u) * 2.0 - 1.0) * _GrassColorVariation;
+        float3 grassColor = _GrassBiomeCount > 0
+            ? EvaluateBiomeGrassColor(positionWS.xz)
+            : float3(1.0, 1.0, 1.0);
+        float3 instanceColor = max(float3(0.0, 0.0, 0.0), grassColor * colorScale);
+        float3 instanceNormal = normalize(lerp(float3(0.0, 1.0, 0.0), normalWS, _GrassNormalAlignment));
+        positionWS.y += _GrassSurfaceOffset;
+
+        GrassInstance instanceData;
+        instanceData.positionScale = float4(positionWS, bladeHeight);
+        instanceData.normalYaw = float4(instanceNormal, yaw);
+        instanceData.colorWidth = float4(instanceColor, bladeWidth);
+        _GrassInstances[writeIndex] = instanceData;
+    }
+}
+
+[numthreads(1, 1, 1)]
+void FinalizeGrassArgs(uint3 id : SV_DispatchThreadID)
+{
+    uint capacity = (uint)max(_GrassCapacity, 0);
+    uint instanceCount = min(_GrassCounter[0], capacity);
+    _GrassArgs[0] = (uint)max(_GrassDrawIndexCount, 0);
+    _GrassArgs[1] = instanceCount;
+    _GrassArgs[2] = (uint)max(_GrassDrawStartIndex, 0);
+    _GrassArgs[3] = (uint)max(_GrassDrawBaseVertex, 0);
+    _GrassArgs[4] = 0u;
+}

@@ -16,6 +16,7 @@ public partial class InfinitMeshTerrain
     private const int GrassInstanceStride = 48;
     private const int GrassSurfaceStride = 12;
     private const int GrassTerrainLayerStride = 12;
+    private const int GrassBiomeStride = 32;
     private const int MaxGrassSurfaceResolution = 257;
     private static readonly int GrassInstancesPropertyId = Shader.PropertyToID("_GrassInstances");
     private static readonly int GrassViewerPositionPropertyId = Shader.PropertyToID("_ViewerPosition");
@@ -27,9 +28,20 @@ public partial class InfinitMeshTerrain
     private static readonly int GrassSurfaceVerticesPropertyId = Shader.PropertyToID("_GrassSurfaceVertices");
     private static readonly int GrassSurfaceNormalsPropertyId = Shader.PropertyToID("_GrassSurfaceNormals");
     private static readonly int GrassTerrainLayersPropertyId = Shader.PropertyToID("_GrassTerrainLayers");
+    private static readonly int GrassBiomesPropertyId = Shader.PropertyToID("_GrassBiomes");
     private static readonly int GrassCounterPropertyId = Shader.PropertyToID("_GrassCounter");
     private static readonly int GrassArgsPropertyId = Shader.PropertyToID("_GrassArgs");
     private static readonly int GrassTerrainLayerCountPropertyId = Shader.PropertyToID("_GrassTerrainLayerCount");
+    private static readonly int GrassBiomeCountPropertyId = Shader.PropertyToID("_GrassBiomeCount");
+    private static readonly int GrassBiomeSeedPropertyId = Shader.PropertyToID("_GrassBiomeSeed");
+    private static readonly int GrassBiomeUseNoisePropertyId = Shader.PropertyToID("_GrassBiomeUseNoise");
+    private static readonly int GrassBiomeBlendDistancePropertyId = Shader.PropertyToID("_GrassBiomeBlendDistance");
+    private static readonly int GrassBiomeNoiseAmplitudePropertyId = Shader.PropertyToID("_GrassBiomeNoiseAmplitude");
+    private static readonly int GrassBiomeNoiseFrequencyPropertyId = Shader.PropertyToID("_GrassBiomeNoiseFrequency");
+    private static readonly int GrassBiomeNoiseOctavesPropertyId = Shader.PropertyToID("_GrassBiomeNoiseOctaves");
+    private static readonly int GrassBiomeNoiseLacunarityPropertyId = Shader.PropertyToID("_GrassBiomeNoiseLacunarity");
+    private static readonly int GrassBiomeNoisePersistencePropertyId = Shader.PropertyToID("_GrassBiomeNoisePersistence");
+    private static readonly int GrassBiomeNoiseOffsetPropertyId = Shader.PropertyToID("_GrassBiomeNoiseOffset");
     private static readonly int GrassTerrainSeedPropertyId = Shader.PropertyToID("_GrassTerrainSeed");
     private static readonly int GrassSeedPropertyId = Shader.PropertyToID("_GrassSeed");
     private static readonly int GrassChannelPropertyId = Shader.PropertyToID("_GrassChannel");
@@ -70,6 +82,14 @@ public partial class InfinitMeshTerrain
     private static readonly int GrassDrawBaseVertexPropertyId = Shader.PropertyToID("_GrassDrawBaseVertex");
     private static readonly uint[] GrassCounterResetData = { 0u };
     private static readonly GrassTerrainLayerData[] EmptyGrassTerrainLayerData = { default };
+    private static readonly GrassBiomeData[] EmptyGrassBiomeData =
+    {
+        new GrassBiomeData
+        {
+            DistanceRange = float4.zero,
+            GrassColor = float4.zero
+        }
+    };
 
     [Header("Detail Grass")]
     [SerializeField] private GrassSettingsSO grassSettings;
@@ -1114,6 +1134,7 @@ public partial class InfinitMeshTerrain
             ComputeBuffer surfaceVertexBuffer = null;
             ComputeBuffer surfaceNormalBuffer = null;
             ComputeBuffer terrainLayerBuffer = null;
+            ComputeBuffer biomeBuffer = null;
 
             try
             {
@@ -1133,6 +1154,9 @@ public partial class InfinitMeshTerrain
                     terrainLayerBuffer.SetData(EmptyGrassTerrainLayerData);
                 }
 
+                biomeBuffer = new ComputeBuffer(1, GrassBiomeStride, ComputeBufferType.Structured);
+                biomeBuffer.SetData(EmptyGrassBiomeData);
+
                 int cellsPerAxis = CalculateGrassCellsPerAxis(task.CellSize, settings);
                 ConfigureGrassGenerationKernel(
                     shader,
@@ -1144,7 +1168,8 @@ public partial class InfinitMeshTerrain
                     cellsPerAxis,
                     surfaceVertexBuffer,
                     surfaceNormalBuffer,
-                    terrainLayerBuffer);
+                    terrainLayerBuffer,
+                    biomeBuffer);
 
                 int threadGroups = Mathf.CeilToInt(cellsPerAxis / 8f);
                 shader.Dispatch(generateKernel, threadGroups, threadGroups, 1);
@@ -1156,6 +1181,7 @@ public partial class InfinitMeshTerrain
                 ReleaseTemporaryBuffer(surfaceVertexBuffer);
                 ReleaseTemporaryBuffer(surfaceNormalBuffer);
                 ReleaseTemporaryBuffer(terrainLayerBuffer);
+                ReleaseTemporaryBuffer(biomeBuffer);
             }
         }
 
@@ -1314,17 +1340,29 @@ public partial class InfinitMeshTerrain
             int cellsPerAxis,
             ComputeBuffer surfaceVertexBuffer,
             ComputeBuffer surfaceNormalBuffer,
-            ComputeBuffer terrainLayerBuffer)
+            ComputeBuffer terrainLayerBuffer,
+            ComputeBuffer biomeBuffer)
         {
             float2 chunkOrigin = GrassCellOrigin(task.Coord, task.CellSize);
 
             shader.SetBuffer(kernel, GrassSurfaceVerticesPropertyId, surfaceVertexBuffer);
             shader.SetBuffer(kernel, GrassSurfaceNormalsPropertyId, surfaceNormalBuffer);
             shader.SetBuffer(kernel, GrassTerrainLayersPropertyId, terrainLayerBuffer);
+            shader.SetBuffer(kernel, GrassBiomesPropertyId, biomeBuffer);
             shader.SetBuffer(kernel, GrassInstancesPropertyId, grassInstanceBuffer);
             shader.SetBuffer(kernel, GrassCounterPropertyId, grassCounterBuffer);
 
             shader.SetInt(GrassTerrainLayerCountPropertyId, terrainLayerCount);
+            shader.SetInt(GrassBiomeCountPropertyId, 0);
+            shader.SetInt(GrassBiomeSeedPropertyId, settings.TerrainSeed);
+            shader.SetInt(GrassBiomeUseNoisePropertyId, 0);
+            shader.SetFloat(GrassBiomeBlendDistancePropertyId, 0f);
+            shader.SetFloat(GrassBiomeNoiseAmplitudePropertyId, 0f);
+            shader.SetFloat(GrassBiomeNoiseFrequencyPropertyId, 0f);
+            shader.SetInt(GrassBiomeNoiseOctavesPropertyId, 1);
+            shader.SetFloat(GrassBiomeNoiseLacunarityPropertyId, 2f);
+            shader.SetFloat(GrassBiomeNoisePersistencePropertyId, 0.5f);
+            shader.SetVector(GrassBiomeNoiseOffsetPropertyId, Vector4.zero);
             shader.SetInt(GrassTerrainSeedPropertyId, settings.TerrainSeed);
             shader.SetInt(GrassSeedPropertyId, settings.GrassSeed);
             shader.SetInt(GrassChannelPropertyId, settings.Channel);

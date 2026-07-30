@@ -151,6 +151,12 @@ public partial class InfinitMeshTerrain
         public float BlendRange;
     }
 
+    private struct GrassBiomeData
+    {
+        public float4 DistanceRange;
+        public float4 GrassColor;
+    }
+
     private struct GrassBuildSettings
     {
         public int TerrainSeed;
