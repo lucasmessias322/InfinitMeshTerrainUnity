@@ -73,6 +73,8 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
             float4 _FadeDistances;
             float4 _Wind;
             float4 _MeshGrounding;
+            float4 _Trample;
+            float3 _TramplePosition;
 
             struct Attributes
             {
@@ -198,14 +200,32 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                     bitangent * (input.positionOS.z * width) +
                     terrainNormal * ((input.positionOS.y - _MeshGrounding.x) * height + _MeshGrounding.y);
 
-                float3 positionWS = origin + localOffset + windOffset;
+                float trampleRadius = max(_Trample.x, 0.0);
+                float2 trampleDelta = origin.xz - _TramplePosition.xz;
+                float trampleDistance = length(trampleDelta);
+                float trampleMask = trampleRadius > 0.0001
+                    ? 1.0 - smoothstep(trampleRadius * 0.35, trampleRadius, trampleDistance)
+                    : 0.0;
+                trampleMask *= saturate(_Trample.y);
+                float2 trampleDirection = trampleDistance > 0.001
+                    ? trampleDelta / trampleDistance
+                    : yawForward.xz;
+                float tipMask = swayMask * swayMask;
+                float3 trampleOffset = float3(trampleDirection.x, -saturate(_Trample.z), trampleDirection.y)
+                    * (trampleMask * tipMask * height);
+                float3 bentNormal = normalize(lerp(
+                    terrainNormal,
+                    normalize(float3(trampleDirection.x, 0.35, trampleDirection.y)),
+                    saturate(trampleMask * tipMask * 0.55)));
+
+                float3 positionWS = origin + localOffset + windOffset + trampleOffset;
                 float distanceToViewer = distance(_ViewerPosition.xz, positionWS.xz);
                 float fade = 1.0 - smoothstep(_FadeDistances.x, _FadeDistances.y, distanceToViewer);
 
                 Varyings output;
                 output.positionHCS = TransformWorldToHClip(positionWS);
                 output.uv = input.uv;
-                output.normalWS = half3(terrainNormal);
+                output.normalWS = half3(bentNormal);
                 output.color = half3(instanceData.colorWidth.rgb);
                 output.fade = half(fade);
                 output.fogFactor = half(ComputeFogFactor(output.positionHCS.z));

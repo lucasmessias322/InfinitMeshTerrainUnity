@@ -139,15 +139,18 @@ public partial class InfinitMeshTerrain
             int heightLayerCount,
             int heightSplineSampleCount,
             int grassInstanceCapacity,
-            int grassTerrainLayerCount)
+            int grassTerrainLayerCount,
+            bool useGpuGeneration)
         {
             Coord = coord;
             CellSize = cellSize;
             SurfaceResolution = surfaceResolution;
             SurfaceVertexCount = surfaceVertexCount;
+            GrassInstanceCapacity = Mathf.Max(0, grassInstanceCapacity);
+            UseGpuGeneration = useGpuGeneration;
             Vertices = new NativeArray<Vector3>(surfaceVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Normals = new NativeArray<Vector3>(surfaceVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            Uvs = new NativeArray<Vector2>(surfaceVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            Uvs = new NativeArray<Vector2>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
 
             if (heightLayerCount > 0)
             {
@@ -159,12 +162,16 @@ public partial class InfinitMeshTerrain
                 HeightSplineSamples = new NativeArray<float>(heightSplineSampleCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             }
 
-            if (grassInstanceCapacity > 0)
+            if (grassTerrainLayerCount > 0)
             {
-                GrassInstances = new NativeArray<GrassInstanceData>(grassInstanceCapacity, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+                GrassTerrainLayers = new NativeArray<GrassTerrainLayerData>(Mathf.Max(0, grassTerrainLayerCount), Allocator.Persistent);
+            }
+
+            if (!UseGpuGeneration && GrassInstanceCapacity > 0)
+            {
+                GrassInstances = new NativeArray<GrassInstanceData>(GrassInstanceCapacity, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
                 GrassInstanceCounter = new NativeArray<int>(1, Allocator.Persistent);
                 GrassBounds = new NativeArray<GrassChunkBounds>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-                GrassTerrainLayers = new NativeArray<GrassTerrainLayerData>(Mathf.Max(0, grassTerrainLayerCount), Allocator.Persistent);
             }
         }
 
@@ -172,6 +179,8 @@ public partial class InfinitMeshTerrain
         public float CellSize { get; }
         public int SurfaceResolution { get; }
         public int SurfaceVertexCount { get; }
+        public int GrassInstanceCapacity { get; }
+        public bool UseGpuGeneration { get; }
         public JobHandle Handle;
         public NativeArray<Vector3> Vertices;
         public NativeArray<Vector3> Normals;

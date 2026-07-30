@@ -10,17 +10,74 @@ using UnityEngine.Rendering;
 public partial class InfinitMeshTerrain
 {
     private const string GrassShaderName = "Shader Graphs/GrassShaderGraph";
+    private const string GrassComputeResourceName = "GrassInstanceGenerator";
+    private const string GrassGenerateKernelName = "GenerateGrassInstances";
+    private const string GrassFinalizeArgsKernelName = "FinalizeGrassArgs";
     private const int GrassInstanceStride = 48;
+    private const int GrassSurfaceStride = 12;
+    private const int GrassTerrainLayerStride = 12;
     private const int MaxGrassSurfaceResolution = 257;
     private static readonly int GrassInstancesPropertyId = Shader.PropertyToID("_GrassInstances");
     private static readonly int GrassViewerPositionPropertyId = Shader.PropertyToID("_ViewerPosition");
     private static readonly int GrassFadeDistancesPropertyId = Shader.PropertyToID("_FadeDistances");
     private static readonly int GrassWindPropertyId = Shader.PropertyToID("_Wind");
     private static readonly int GrassMeshGroundingPropertyId = Shader.PropertyToID("_MeshGrounding");
+    private static readonly int GrassTramplePropertyId = Shader.PropertyToID("_Trample");
+    private static readonly int GrassTramplePositionPropertyId = Shader.PropertyToID("_TramplePosition");
+    private static readonly int GrassSurfaceVerticesPropertyId = Shader.PropertyToID("_GrassSurfaceVertices");
+    private static readonly int GrassSurfaceNormalsPropertyId = Shader.PropertyToID("_GrassSurfaceNormals");
+    private static readonly int GrassTerrainLayersPropertyId = Shader.PropertyToID("_GrassTerrainLayers");
+    private static readonly int GrassCounterPropertyId = Shader.PropertyToID("_GrassCounter");
+    private static readonly int GrassArgsPropertyId = Shader.PropertyToID("_GrassArgs");
+    private static readonly int GrassTerrainLayerCountPropertyId = Shader.PropertyToID("_GrassTerrainLayerCount");
+    private static readonly int GrassTerrainSeedPropertyId = Shader.PropertyToID("_GrassTerrainSeed");
+    private static readonly int GrassSeedPropertyId = Shader.PropertyToID("_GrassSeed");
+    private static readonly int GrassChannelPropertyId = Shader.PropertyToID("_GrassChannel");
+    private static readonly int GrassDensityPerSquareMeterPropertyId = Shader.PropertyToID("_GrassDensityPerSquareMeter");
+    private static readonly int GrassDetailCellSizePropertyId = Shader.PropertyToID("_GrassDetailCellSize");
+    private static readonly int GrassJitterPropertyId = Shader.PropertyToID("_GrassJitter");
+    private static readonly int GrassMaxInstancesPerCellPropertyId = Shader.PropertyToID("_GrassMaxInstancesPerCell");
+    private static readonly int GrassLayerThresholdPropertyId = Shader.PropertyToID("_GrassLayerThreshold");
+    private static readonly int GrassMinHeightPropertyId = Shader.PropertyToID("_GrassMinHeight");
+    private static readonly int GrassMaxHeightPropertyId = Shader.PropertyToID("_GrassMaxHeight");
+    private static readonly int GrassHeightFadeRangePropertyId = Shader.PropertyToID("_GrassHeightFadeRange");
+    private static readonly int GrassMinSlopeAnglePropertyId = Shader.PropertyToID("_GrassMinSlopeAngle");
+    private static readonly int GrassMaxSlopeAnglePropertyId = Shader.PropertyToID("_GrassMaxSlopeAngle");
+    private static readonly int GrassSlopeFadeRangePropertyId = Shader.PropertyToID("_GrassSlopeFadeRange");
+    private static readonly int GrassBladeHeightPropertyId = Shader.PropertyToID("_GrassBladeHeight");
+    private static readonly int GrassBladeHeightVariationPropertyId = Shader.PropertyToID("_GrassBladeHeightVariation");
+    private static readonly int GrassBladeWidthPropertyId = Shader.PropertyToID("_GrassBladeWidth");
+    private static readonly int GrassBladeWidthVariationPropertyId = Shader.PropertyToID("_GrassBladeWidthVariation");
+    private static readonly int GrassColorVariationPropertyId = Shader.PropertyToID("_GrassColorVariation");
+    private static readonly int GrassNormalAlignmentPropertyId = Shader.PropertyToID("_GrassNormalAlignment");
+    private static readonly int GrassSurfaceOffsetPropertyId = Shader.PropertyToID("_GrassSurfaceOffset");
+    private static readonly int GrassCoverageNoiseFrequencyPropertyId = Shader.PropertyToID("_GrassCoverageNoiseFrequency");
+    private static readonly int GrassCoverageNoiseStrengthPropertyId = Shader.PropertyToID("_GrassCoverageNoiseStrength");
+    private static readonly int GrassChunkCoordXPropertyId = Shader.PropertyToID("_GrassChunkCoordX");
+    private static readonly int GrassChunkCoordZPropertyId = Shader.PropertyToID("_GrassChunkCoordZ");
+    private static readonly int GrassChunkOriginPropertyId = Shader.PropertyToID("_GrassChunkOrigin");
+    private static readonly int GrassChunkSizePropertyId = Shader.PropertyToID("_GrassChunkSize");
+    private static readonly int GrassResolutionPropertyId = Shader.PropertyToID("_GrassResolution");
+    private static readonly int GrassCellsPerAxisPropertyId = Shader.PropertyToID("_GrassCellsPerAxis");
+    private static readonly int GrassCapacityPropertyId = Shader.PropertyToID("_GrassCapacity");
+    private static readonly int GrassSlopeEnabledPropertyId = Shader.PropertyToID("_GrassSlopeEnabled");
+    private static readonly int GrassSlopeChannelPropertyId = Shader.PropertyToID("_GrassSlopeChannel");
+    private static readonly int GrassSlopeStartAnglePropertyId = Shader.PropertyToID("_GrassSlopeStartAngle");
+    private static readonly int GrassSlopeFullAnglePropertyId = Shader.PropertyToID("_GrassSlopeFullAngle");
+    private static readonly int GrassSlopeStrengthPropertyId = Shader.PropertyToID("_GrassSlopeStrength");
+    private static readonly int GrassDrawIndexCountPropertyId = Shader.PropertyToID("_GrassDrawIndexCount");
+    private static readonly int GrassDrawStartIndexPropertyId = Shader.PropertyToID("_GrassDrawStartIndex");
+    private static readonly int GrassDrawBaseVertexPropertyId = Shader.PropertyToID("_GrassDrawBaseVertex");
+    private static readonly uint[] GrassCounterResetData = { 0u };
+    private static readonly GrassTerrainLayerData[] EmptyGrassTerrainLayerData = { default };
 
     [Header("Detail Grass")]
     [SerializeField] private GrassSettingsSO grassSettings;
-    [Tooltip("Grass buffer uploads are skipped while the viewer is faster than this. Use 0 to never defer grass uploads.")]
+    [Tooltip("Transform that bends/presses the grass. If empty, the terrain viewer is used.")]
+    [SerializeField] private Transform grassTrampleTarget;
+    [Tooltip("Compute shader used to generate grass instance buffers on the GPU. If left empty, the component tries Resources/GrassInstanceGenerator.")]
+    [SerializeField] private ComputeShader grassInstanceComputeShader;
+    [Tooltip("CPU fallback grass uploads are skipped while the viewer is faster than this. GPU grass generation ignores this because it does not upload full instance buffers.")]
     [SerializeField, Min(0f)] private float grassUploadMaxViewerSpeed = 192f;
     [Tooltip("Extra time to wait after fast movement before scheduling grass rebuilds again.")]
     [SerializeField, Min(0f)] private float grassUploadSettleDelay = 0.2f;
@@ -31,6 +88,7 @@ public partial class InfinitMeshTerrain
 
     private Mesh runtimeGrassMesh;
     private Material runtimeGrassMaterial;
+    private ComputeShader runtimeGrassInstanceComputeShader;
     private GrassSettingsSO runtimeDefaultGrassSettings;
     private readonly Dictionary<Vector2Int, GrassCell> grassCells = new Dictionary<Vector2Int, GrassCell>();
     private readonly Dictionary<Vector2Int, GrassBuildTask> runningGrassTasks = new Dictionary<Vector2Int, GrassBuildTask>();
@@ -60,6 +118,43 @@ public partial class InfinitMeshTerrain
         {
             grassSettings.ValidateValues();
         }
+    }
+
+    private bool TryGetGrassComputeShader(out ComputeShader shader, out int generateKernel, out int finalizeArgsKernel)
+    {
+        shader = null;
+        generateKernel = -1;
+        finalizeArgsKernel = -1;
+
+        if (!SystemInfo.supportsComputeShaders)
+        {
+            return false;
+        }
+
+        shader = grassInstanceComputeShader != null
+            ? grassInstanceComputeShader
+            : GetRuntimeGrassInstanceComputeShader();
+        if (shader == null
+            || !shader.HasKernel(GrassGenerateKernelName)
+            || !shader.HasKernel(GrassFinalizeArgsKernelName))
+        {
+            shader = null;
+            return false;
+        }
+
+        generateKernel = shader.FindKernel(GrassGenerateKernelName);
+        finalizeArgsKernel = shader.FindKernel(GrassFinalizeArgsKernelName);
+        return generateKernel >= 0 && finalizeArgsKernel >= 0;
+    }
+
+    private ComputeShader GetRuntimeGrassInstanceComputeShader()
+    {
+        if (runtimeGrassInstanceComputeShader == null)
+        {
+            runtimeGrassInstanceComputeShader = Resources.Load<ComputeShader>(GrassComputeResourceName);
+        }
+
+        return runtimeGrassInstanceComputeShader;
     }
 
     private void UpdateGrassStreamingMotion()
@@ -92,6 +187,11 @@ public partial class InfinitMeshTerrain
 
     private bool ShouldDeferGrassStreaming()
     {
+        if (TryGetGrassComputeShader(out _, out _, out _))
+        {
+            return false;
+        }
+
         if (grassUploadMaxViewerSpeed <= 0f)
         {
             return false;
@@ -169,12 +269,15 @@ public partial class InfinitMeshTerrain
 
         drawMaterial.enableInstancing = true;
 
+        TryGetGrassComputeShader(out ComputeShader grassComputeShader, out _, out int finalizeArgsKernel);
         Vector2 windDirection = settings.WindDirection.sqrMagnitude > 0.0001f
             ? settings.WindDirection.normalized
             : Vector2.right;
         Vector4 wind = new Vector4(windDirection.x, windDirection.y, settings.WindStrength, settings.WindSpeed);
         Vector4 fadeDistances = new Vector4(settings.FadeStartDistance, settings.DetailDistance, 0f, 0f);
         Vector4 meshGrounding = new Vector4(0f, settings.SurfaceOffset, 0f, 0f);
+        Vector4 trample = new Vector4(settings.TrampleRadius, settings.TrampleStrength, settings.TrampleFlatten, 0f);
+        Vector3 tramplePosition = grassTrampleTarget != null ? grassTrampleTarget.position : viewer.position;
         int layer = gameObject.layer;
         bool deferGrassStreaming = ShouldDeferGrassStreaming();
         float grassCellSize = GetGrassStreamingCellSize(settings);
@@ -205,9 +308,13 @@ public partial class InfinitMeshTerrain
                 fadeDistances,
                 wind,
                 meshGrounding,
+                trample,
+                tramplePosition,
                 settings.ShadowCastingMode,
                 settings.ReceiveShadows,
-                layer);
+                layer,
+                grassComputeShader,
+                finalizeArgsKernel);
         }
 
         if (deferGrassStreaming || grassBuildCandidateBuffer.Count == 0)
@@ -345,6 +452,7 @@ public partial class InfinitMeshTerrain
 
         float grassCellSize = GetGrassStreamingCellSize(settings);
         int grassInstanceCapacity = CalculateGrassInstanceCapacity(grassCellSize);
+        bool useGpuGeneration = TryGetGrassComputeShader(out _, out _, out _);
         while (runningGrassTasks.Count < maxConcurrentGrassBuildTasks && grassBuildQueue.Count > 0)
         {
             Vector2Int coord = grassBuildQueue.Dequeue();
@@ -364,12 +472,12 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            GrassBuildTask task = ScheduleGrassBuild(coord, grassCellSize, grassInstanceCapacity);
+            GrassBuildTask task = ScheduleGrassBuild(coord, grassCellSize, grassInstanceCapacity, useGpuGeneration);
             runningGrassTasks.Add(coord, task);
         }
     }
 
-    private GrassBuildTask ScheduleGrassBuild(Vector2Int coord, float grassCellSize, int grassInstanceCapacity)
+    private GrassBuildTask ScheduleGrassBuild(Vector2Int coord, float grassCellSize, int grassInstanceCapacity, bool useGpuGeneration)
     {
         int surfaceResolution = CalculateGrassSurfaceResolution(grassCellSize);
         int surfaceVertexCount = surfaceResolution * surfaceResolution;
@@ -385,7 +493,8 @@ public partial class InfinitMeshTerrain
             heightLayerCount,
             heightSplineSampleCount,
             grassInstanceCapacity,
-            grassTerrainLayerCount);
+            grassTerrainLayerCount,
+            useGpuGeneration);
         CopyTerrainHeightLayers(task.HeightLayers, task.HeightSplineSamples);
         CopyGrassTerrainLayers(task.GrassTerrainLayers);
 
@@ -408,8 +517,16 @@ public partial class InfinitMeshTerrain
             BaseVertexCount = surfaceVertexCount,
             SegmentCount = surfaceResolution - 1,
             LodStep = 1,
+            WriteUvs = 0,
             Stitching = default
         };
+
+        JobHandle surfaceHandle = surfaceJob.ScheduleParallel(surfaceVertexCount, 64, default);
+        if (useGpuGeneration)
+        {
+            task.Handle = surfaceHandle;
+            return task;
+        }
 
         GenerateGrassInstancesJob grassJob = new GenerateGrassInstancesJob
         {
@@ -428,7 +545,6 @@ public partial class InfinitMeshTerrain
             BaseVertexCount = surfaceVertexCount
         };
 
-        JobHandle surfaceHandle = surfaceJob.ScheduleParallel(surfaceVertexCount, 64, default);
         task.Handle = grassJob.Schedule(surfaceHandle);
         return task;
     }
@@ -479,7 +595,7 @@ public partial class InfinitMeshTerrain
 
             if (canApply)
             {
-                cell.Apply(task);
+                ApplyCompletedGrassTask(coord, cell, task);
                 appliedCount++;
             }
             else if (visibleGrassCellCoords.Contains(coord) && grassCells.ContainsKey(coord))
@@ -488,6 +604,43 @@ public partial class InfinitMeshTerrain
             }
 
             task.Dispose();
+        }
+    }
+
+    private void ApplyCompletedGrassTask(Vector2Int coord, GrassCell cell, GrassBuildTask task)
+    {
+        if (!task.UseGpuGeneration)
+        {
+            cell.Apply(task);
+            return;
+        }
+
+        if (!TryGetGrassComputeShader(out ComputeShader shader, out int generateKernel, out int finalizeArgsKernel))
+        {
+            cell.ClearGrass();
+            RequestGrassBuild(coord);
+            return;
+        }
+
+        GrassSettingsSO settings = GetGrassSettings();
+        Mesh drawMesh = GetGrassRenderMesh(settings);
+        if (drawMesh == null)
+        {
+            cell.ApplyEmpty();
+            return;
+        }
+
+        bool applied = cell.ApplyGpu(
+            task,
+            shader,
+            generateKernel,
+            finalizeArgsKernel,
+            drawMesh,
+            CreateGrassBuildSettings(),
+            CreateSlopeTextureSettings());
+        if (!applied)
+        {
+            cell.ApplyEmpty();
         }
     }
 
@@ -840,6 +993,8 @@ public partial class InfinitMeshTerrain
             runtimeGrassMaterial = null;
         }
 
+        runtimeGrassInstanceComputeShader = null;
+
         if (runtimeDefaultGrassSettings != null)
         {
             if (Application.isPlaying)
@@ -859,9 +1014,11 @@ public partial class InfinitMeshTerrain
     {
         private ComputeBuffer grassInstanceBuffer;
         private ComputeBuffer grassArgsBuffer;
+        private ComputeBuffer grassCounterBuffer;
         private MaterialPropertyBlock grassPropertyBlock;
         private Bounds grassBounds;
         private int grassInstanceCount;
+        private int grassGpuCapacity;
         private int pendingGrassUploadCount;
         private int pendingGrassUploadOffset;
         private uint grassArgsIndexCount;
@@ -869,6 +1026,7 @@ public partial class InfinitMeshTerrain
         private uint grassArgsBaseVertex;
         private bool grassArgsDirty = true;
         private bool grassBuilt;
+        private bool grassGeneratedOnGpu;
         private NativeArray<GrassInstanceData> pendingGrassUpload;
 
         public GrassCell(Vector2Int coord)
@@ -879,11 +1037,15 @@ public partial class InfinitMeshTerrain
         public Vector2Int Coord { get; }
         public bool HasPendingGrassUpload => pendingGrassUpload.IsCreated;
         public bool HasGrassBuild => grassBuilt;
-        public bool HasGrass => grassBuilt && grassInstanceBuffer != null && grassInstanceCount > 0;
+        public bool HasGrass => grassBuilt
+            && grassInstanceBuffer != null
+            && (grassGeneratedOnGpu || grassInstanceCount > 0);
 
         public void Apply(GrassBuildTask task)
         {
             DisposePendingGrassUpload();
+            grassGeneratedOnGpu = false;
+            grassGpuCapacity = 0;
 
             if (!task.HasGrassInstances)
             {
@@ -915,9 +1077,93 @@ public partial class InfinitMeshTerrain
             grassBounds = ToBounds(task.GrassBounds[0]);
         }
 
+        public bool ApplyGpu(
+            GrassBuildTask task,
+            ComputeShader shader,
+            int generateKernel,
+            int finalizeArgsKernel,
+            Mesh drawMesh,
+            GrassBuildSettings settings,
+            SlopeTextureSettings slopeTextureSettings)
+        {
+            DisposePendingGrassUpload();
+            grassBuilt = true;
+            grassGeneratedOnGpu = true;
+            grassInstanceCount = 0;
+            grassGpuCapacity = Mathf.Max(0, task.GrassInstanceCapacity);
+            grassArgsDirty = true;
+
+            if (shader == null
+                || generateKernel < 0
+                || finalizeArgsKernel < 0
+                || drawMesh == null
+                || grassGpuCapacity <= 0
+                || task.SurfaceVertexCount <= 0
+                || task.SurfaceResolution < 2
+                || !task.Vertices.IsCreated
+                || !task.Normals.IsCreated)
+            {
+                ReleaseGrassRenderData();
+                return false;
+            }
+
+            EnsureGrassGpuBuffers(grassGpuCapacity);
+            grassCounterBuffer.SetData(GrassCounterResetData);
+            grassBounds = CalculateGpuGrassBounds(task, settings);
+
+            ComputeBuffer surfaceVertexBuffer = null;
+            ComputeBuffer surfaceNormalBuffer = null;
+            ComputeBuffer terrainLayerBuffer = null;
+
+            try
+            {
+                surfaceVertexBuffer = new ComputeBuffer(task.SurfaceVertexCount, GrassSurfaceStride, ComputeBufferType.Structured);
+                surfaceNormalBuffer = new ComputeBuffer(task.SurfaceVertexCount, GrassSurfaceStride, ComputeBufferType.Structured);
+                surfaceVertexBuffer.SetData(task.Vertices);
+                surfaceNormalBuffer.SetData(task.Normals);
+
+                int terrainLayerCount = task.GrassTerrainLayers.IsCreated ? task.GrassTerrainLayers.Length : 0;
+                terrainLayerBuffer = new ComputeBuffer(Mathf.Max(1, terrainLayerCount), GrassTerrainLayerStride, ComputeBufferType.Structured);
+                if (terrainLayerCount > 0)
+                {
+                    terrainLayerBuffer.SetData(task.GrassTerrainLayers);
+                }
+                else
+                {
+                    terrainLayerBuffer.SetData(EmptyGrassTerrainLayerData);
+                }
+
+                int cellsPerAxis = CalculateGrassCellsPerAxis(task.CellSize, settings);
+                ConfigureGrassGenerationKernel(
+                    shader,
+                    generateKernel,
+                    task,
+                    settings,
+                    slopeTextureSettings,
+                    terrainLayerCount,
+                    cellsPerAxis,
+                    surfaceVertexBuffer,
+                    surfaceNormalBuffer,
+                    terrainLayerBuffer);
+
+                int threadGroups = Mathf.CeilToInt(cellsPerAxis / 8f);
+                shader.Dispatch(generateKernel, threadGroups, threadGroups, 1);
+                UpdateGpuGrassArgs(shader, finalizeArgsKernel, drawMesh);
+                return !grassArgsDirty;
+            }
+            finally
+            {
+                ReleaseTemporaryBuffer(surfaceVertexBuffer);
+                ReleaseTemporaryBuffer(surfaceNormalBuffer);
+                ReleaseTemporaryBuffer(terrainLayerBuffer);
+            }
+        }
+
         public void ApplyEmpty()
         {
             grassBuilt = true;
+            grassGeneratedOnGpu = false;
+            grassGpuCapacity = 0;
             ReleaseGrassRenderData();
         }
 
@@ -954,16 +1200,24 @@ public partial class InfinitMeshTerrain
             Vector4 fadeDistances,
             Vector4 wind,
             Vector4 meshGrounding,
+            Vector4 trample,
+            Vector3 tramplePosition,
             ShadowCastingMode shadowCastingMode,
             bool receiveShadows,
-            int layer)
+            int layer,
+            ComputeShader grassArgsComputeShader,
+            int finalizeArgsKernel)
         {
             if (!HasGrass || drawMesh == null || drawMaterial == null)
             {
                 return;
             }
 
-            EnsureGrassArgsBuffer(drawMesh);
+            EnsureGrassArgsBuffer(drawMesh, grassArgsComputeShader, finalizeArgsKernel);
+            if (grassArgsBuffer == null || grassArgsDirty)
+            {
+                return;
+            }
 
             grassPropertyBlock ??= new MaterialPropertyBlock();
             grassPropertyBlock.Clear();
@@ -972,6 +1226,8 @@ public partial class InfinitMeshTerrain
             grassPropertyBlock.SetVector(GrassFadeDistancesPropertyId, fadeDistances);
             grassPropertyBlock.SetVector(GrassWindPropertyId, wind);
             grassPropertyBlock.SetVector(GrassMeshGroundingPropertyId, meshGrounding);
+            grassPropertyBlock.SetVector(GrassTramplePropertyId, trample);
+            grassPropertyBlock.SetVector(GrassTramplePositionPropertyId, tramplePosition);
 
             Graphics.DrawMeshInstancedIndirect(
                 drawMesh,
@@ -989,6 +1245,8 @@ public partial class InfinitMeshTerrain
         public void ClearGrass()
         {
             grassBuilt = false;
+            grassGeneratedOnGpu = false;
+            grassGpuCapacity = 0;
             ReleaseGrassRenderData();
         }
 
@@ -1000,14 +1258,17 @@ public partial class InfinitMeshTerrain
         private void ReleaseGrassRenderData()
         {
             grassInstanceCount = 0;
+            grassGpuCapacity = 0;
             grassArgsDirty = true;
             DisposePendingGrassUpload();
             ReleaseGrassInstanceBuffer();
             ReleaseGrassArgsBuffer();
+            ReleaseGrassCounterBuffer();
         }
 
         private void CompletePendingGrassUpload()
         {
+            grassGeneratedOnGpu = false;
             grassInstanceCount = pendingGrassUploadCount;
             grassArgsDirty = true;
             DisposePendingGrassUpload();
@@ -1024,7 +1285,84 @@ public partial class InfinitMeshTerrain
             pendingGrassUploadOffset = 0;
         }
 
-        private void EnsureGrassArgsBuffer(Mesh drawMesh)
+        private void EnsureGrassGpuBuffers(int instanceCapacity)
+        {
+            if (grassInstanceBuffer == null || grassInstanceBuffer.count < instanceCapacity)
+            {
+                ReleaseGrassInstanceBuffer();
+                grassInstanceBuffer = new ComputeBuffer(instanceCapacity, GrassInstanceStride, ComputeBufferType.Structured);
+            }
+
+            if (grassCounterBuffer == null)
+            {
+                grassCounterBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+            }
+
+            if (grassArgsBuffer == null)
+            {
+                grassArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
+            }
+        }
+
+        private void ConfigureGrassGenerationKernel(
+            ComputeShader shader,
+            int kernel,
+            GrassBuildTask task,
+            GrassBuildSettings settings,
+            SlopeTextureSettings slopeTextureSettings,
+            int terrainLayerCount,
+            int cellsPerAxis,
+            ComputeBuffer surfaceVertexBuffer,
+            ComputeBuffer surfaceNormalBuffer,
+            ComputeBuffer terrainLayerBuffer)
+        {
+            float2 chunkOrigin = GrassCellOrigin(task.Coord, task.CellSize);
+
+            shader.SetBuffer(kernel, GrassSurfaceVerticesPropertyId, surfaceVertexBuffer);
+            shader.SetBuffer(kernel, GrassSurfaceNormalsPropertyId, surfaceNormalBuffer);
+            shader.SetBuffer(kernel, GrassTerrainLayersPropertyId, terrainLayerBuffer);
+            shader.SetBuffer(kernel, GrassInstancesPropertyId, grassInstanceBuffer);
+            shader.SetBuffer(kernel, GrassCounterPropertyId, grassCounterBuffer);
+
+            shader.SetInt(GrassTerrainLayerCountPropertyId, terrainLayerCount);
+            shader.SetInt(GrassTerrainSeedPropertyId, settings.TerrainSeed);
+            shader.SetInt(GrassSeedPropertyId, settings.GrassSeed);
+            shader.SetInt(GrassChannelPropertyId, settings.Channel);
+            shader.SetFloat(GrassDensityPerSquareMeterPropertyId, settings.DensityPerSquareMeter);
+            shader.SetFloat(GrassDetailCellSizePropertyId, settings.CellSize);
+            shader.SetFloat(GrassJitterPropertyId, settings.Jitter);
+            shader.SetInt(GrassMaxInstancesPerCellPropertyId, settings.MaxInstancesPerCell);
+            shader.SetFloat(GrassLayerThresholdPropertyId, settings.LayerThreshold);
+            shader.SetFloat(GrassMinHeightPropertyId, settings.MinHeight);
+            shader.SetFloat(GrassMaxHeightPropertyId, settings.MaxHeight);
+            shader.SetFloat(GrassHeightFadeRangePropertyId, settings.HeightFadeRange);
+            shader.SetFloat(GrassMinSlopeAnglePropertyId, settings.MinSlopeAngle);
+            shader.SetFloat(GrassMaxSlopeAnglePropertyId, settings.MaxSlopeAngle);
+            shader.SetFloat(GrassSlopeFadeRangePropertyId, settings.SlopeFadeRange);
+            shader.SetFloat(GrassBladeHeightPropertyId, settings.BladeHeight);
+            shader.SetFloat(GrassBladeHeightVariationPropertyId, settings.BladeHeightVariation);
+            shader.SetFloat(GrassBladeWidthPropertyId, settings.BladeWidth);
+            shader.SetFloat(GrassBladeWidthVariationPropertyId, settings.BladeWidthVariation);
+            shader.SetFloat(GrassColorVariationPropertyId, settings.ColorVariation);
+            shader.SetFloat(GrassNormalAlignmentPropertyId, settings.NormalAlignment);
+            shader.SetFloat(GrassSurfaceOffsetPropertyId, settings.SurfaceOffset);
+            shader.SetFloat(GrassCoverageNoiseFrequencyPropertyId, settings.CoverageNoiseFrequency);
+            shader.SetFloat(GrassCoverageNoiseStrengthPropertyId, settings.CoverageNoiseStrength);
+            shader.SetInt(GrassChunkCoordXPropertyId, task.Coord.x);
+            shader.SetInt(GrassChunkCoordZPropertyId, task.Coord.y);
+            shader.SetVector(GrassChunkOriginPropertyId, new Vector4(chunkOrigin.x, chunkOrigin.y, 0f, 0f));
+            shader.SetFloat(GrassChunkSizePropertyId, task.CellSize);
+            shader.SetInt(GrassResolutionPropertyId, task.SurfaceResolution);
+            shader.SetInt(GrassCellsPerAxisPropertyId, cellsPerAxis);
+            shader.SetInt(GrassCapacityPropertyId, grassGpuCapacity);
+            shader.SetInt(GrassSlopeEnabledPropertyId, slopeTextureSettings.Enabled ? 1 : 0);
+            shader.SetInt(GrassSlopeChannelPropertyId, (int)slopeTextureSettings.Channel);
+            shader.SetFloat(GrassSlopeStartAnglePropertyId, slopeTextureSettings.StartAngle);
+            shader.SetFloat(GrassSlopeFullAnglePropertyId, slopeTextureSettings.FullAngle);
+            shader.SetFloat(GrassSlopeStrengthPropertyId, slopeTextureSettings.Strength);
+        }
+
+        private void EnsureGrassArgsBuffer(Mesh drawMesh, ComputeShader shader, int finalizeArgsKernel)
         {
             uint indexCount = drawMesh.GetIndexCount(0);
             uint startIndex = drawMesh.GetIndexStart(0);
@@ -1034,6 +1372,20 @@ public partial class InfinitMeshTerrain
             {
                 grassArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
                 grassArgsDirty = true;
+            }
+
+            if (grassGeneratedOnGpu)
+            {
+                if (!grassArgsDirty
+                    && grassArgsIndexCount == indexCount
+                    && grassArgsStartIndex == startIndex
+                    && grassArgsBaseVertex == baseVertex)
+                {
+                    return;
+                }
+
+                UpdateGpuGrassArgs(shader, finalizeArgsKernel, drawMesh);
+                return;
             }
 
             if (!grassArgsDirty
@@ -1060,6 +1412,38 @@ public partial class InfinitMeshTerrain
             grassArgsDirty = false;
         }
 
+        private void UpdateGpuGrassArgs(ComputeShader shader, int kernel, Mesh drawMesh)
+        {
+            if (shader == null
+                || kernel < 0
+                || drawMesh == null
+                || grassCounterBuffer == null
+                || grassArgsBuffer == null)
+            {
+                return;
+            }
+
+            uint indexCount = drawMesh.GetIndexCount(0);
+            uint startIndex = drawMesh.GetIndexStart(0);
+            uint baseVertex = (uint)drawMesh.GetBaseVertex(0);
+            int clampedIndexCount = indexCount > (uint)int.MaxValue ? int.MaxValue : (int)indexCount;
+            int clampedStartIndex = startIndex > (uint)int.MaxValue ? int.MaxValue : (int)startIndex;
+            int clampedBaseVertex = baseVertex > (uint)int.MaxValue ? int.MaxValue : (int)baseVertex;
+
+            shader.SetBuffer(kernel, GrassCounterPropertyId, grassCounterBuffer);
+            shader.SetBuffer(kernel, GrassArgsPropertyId, grassArgsBuffer);
+            shader.SetInt(GrassCapacityPropertyId, grassGpuCapacity);
+            shader.SetInt(GrassDrawIndexCountPropertyId, clampedIndexCount);
+            shader.SetInt(GrassDrawStartIndexPropertyId, clampedStartIndex);
+            shader.SetInt(GrassDrawBaseVertexPropertyId, clampedBaseVertex);
+            shader.Dispatch(kernel, 1, 1, 1);
+
+            grassArgsIndexCount = indexCount;
+            grassArgsStartIndex = startIndex;
+            grassArgsBaseVertex = baseVertex;
+            grassArgsDirty = false;
+        }
+
         private void ReleaseGrassInstanceBuffer()
         {
             if (grassInstanceBuffer == null)
@@ -1080,6 +1464,70 @@ public partial class InfinitMeshTerrain
 
             grassArgsBuffer.Release();
             grassArgsBuffer = null;
+        }
+
+        private void ReleaseGrassCounterBuffer()
+        {
+            if (grassCounterBuffer == null)
+            {
+                return;
+            }
+
+            grassCounterBuffer.Release();
+            grassCounterBuffer = null;
+        }
+
+        private static int CalculateGrassCellsPerAxis(float cellSize, GrassBuildSettings settings)
+        {
+            return Mathf.Max(1, Mathf.CeilToInt(cellSize / Mathf.Max(0.1f, settings.CellSize)));
+        }
+
+        private static Bounds CalculateGpuGrassBounds(GrassBuildTask task, GrassBuildSettings settings)
+        {
+            float minY = float.MaxValue;
+            float maxY = float.MinValue;
+            if (task.Vertices.IsCreated)
+            {
+                int count = Mathf.Min(task.SurfaceVertexCount, task.Vertices.Length);
+                for (int i = 0; i < count; i++)
+                {
+                    float y = task.Vertices[i].y;
+                    minY = Mathf.Min(minY, y);
+                    maxY = Mathf.Max(maxY, y);
+                }
+            }
+
+            if (minY == float.MaxValue || maxY == float.MinValue)
+            {
+                minY = settings.MinHeight;
+                maxY = settings.MaxHeight;
+            }
+
+            float maxBladeHeight = settings.BladeHeight * Mathf.Max(0.05f, 1f + settings.BladeHeightVariation);
+            float maxBladeWidth = settings.BladeWidth * Mathf.Max(0.05f, 1f + settings.BladeWidthVariation);
+            float horizontalPadding = Mathf.Max(maxBladeWidth, settings.SurfaceOffset) * 3f + 2f;
+            float minBoundsY = minY + settings.SurfaceOffset;
+            float maxBoundsY = maxY + settings.SurfaceOffset + maxBladeHeight;
+            float2 origin = GrassCellOrigin(task.Coord, task.CellSize);
+
+            Bounds bounds = new Bounds(
+                new Vector3(
+                    origin.x + task.CellSize * 0.5f,
+                    (minBoundsY + maxBoundsY) * 0.5f,
+                    origin.y + task.CellSize * 0.5f),
+                new Vector3(
+                    task.CellSize + horizontalPadding * 2f,
+                    Mathf.Max(0.01f, maxBoundsY - minBoundsY),
+                    task.CellSize + horizontalPadding * 2f));
+            return bounds;
+        }
+
+        private static void ReleaseTemporaryBuffer(ComputeBuffer buffer)
+        {
+            if (buffer != null)
+            {
+                buffer.Release();
+            }
         }
 
         private static Bounds ToBounds(GrassChunkBounds source)
@@ -1563,6 +2011,8 @@ public partial class InfinitMeshTerrain
             Vector4 fadeDistances,
             Vector4 wind,
             Vector4 meshGrounding,
+            Vector4 trample,
+            Vector3 tramplePosition,
             ShadowCastingMode shadowCastingMode,
             bool receiveShadows,
             int layer)
@@ -1581,6 +2031,8 @@ public partial class InfinitMeshTerrain
             grassPropertyBlock.SetVector(GrassFadeDistancesPropertyId, fadeDistances);
             grassPropertyBlock.SetVector(GrassWindPropertyId, wind);
             grassPropertyBlock.SetVector(GrassMeshGroundingPropertyId, meshGrounding);
+            grassPropertyBlock.SetVector(GrassTramplePropertyId, trample);
+            grassPropertyBlock.SetVector(GrassTramplePositionPropertyId, tramplePosition);
 
             Graphics.DrawMeshInstancedIndirect(
                 drawMesh,

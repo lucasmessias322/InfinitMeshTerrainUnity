@@ -112,6 +112,7 @@ public partial class InfinitMeshTerrain
             BaseVertexCount = baseVertexCount,
             SegmentCount = segmentCount,
             LodStep = step,
+            WriteUvs = 1,
             Stitching = stitching
         };
 

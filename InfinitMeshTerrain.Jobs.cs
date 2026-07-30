@@ -24,6 +24,7 @@ public partial class InfinitMeshTerrain
         public int BaseVertexCount;
         public int SegmentCount;
         public int LodStep;
+        public int WriteUvs;
         public EdgeStitching Stitching;
 
         public void Execute(int index)
@@ -45,7 +46,10 @@ public partial class InfinitMeshTerrain
 
             Vertices[index] = new Vector3(uv.x * ChunkSize, height, uv.y * ChunkSize);
             Normals[index] = new Vector3(normal.x, normal.y, normal.z);
-            Uvs[index] = new Vector2(uv.x, uv.y);
+            if (WriteUvs != 0)
+            {
+                Uvs[index] = new Vector2(uv.x, uv.y);
+            }
         }
 
         private int2 ResolveGrid(int index)

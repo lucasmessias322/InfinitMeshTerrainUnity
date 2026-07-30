@@ -37,6 +37,9 @@ public sealed class GrassSettingsSO : ScriptableObject
     public const float DefaultCoverageNoiseStrength = 0.35f;
     public const float DefaultWindStrength = 0.35f;
     public const float DefaultWindSpeed = 1.6f;
+    public const float DefaultTrampleRadius = 2.4f;
+    public const float DefaultTrampleStrength = 1.15f;
+    public const float DefaultTrampleFlatten = 0.85f;
 
     public static readonly Vector2 DefaultWindDirection = new Vector2(1f, 0.25f);
 
@@ -92,6 +95,11 @@ public sealed class GrassSettingsSO : ScriptableObject
     [SerializeField, Min(0f)] private float windStrength = DefaultWindStrength;
     [SerializeField, Min(0f)] private float windSpeed = DefaultWindSpeed;
 
+    [Header("Interaction")]
+    [SerializeField, Min(0f)] private float trampleRadius = DefaultTrampleRadius;
+    [SerializeField, Min(0f)] private float trampleStrength = DefaultTrampleStrength;
+    [SerializeField, Range(0f, 1f)] private float trampleFlatten = DefaultTrampleFlatten;
+
     public bool EnableGrass => enableGrass;
     public Material Material => material;
     public Mesh Mesh => mesh;
@@ -129,6 +137,9 @@ public sealed class GrassSettingsSO : ScriptableObject
     public Vector2 WindDirection => windDirection;
     public float WindStrength => Mathf.Max(0f, windStrength);
     public float WindSpeed => Mathf.Max(0f, windSpeed);
+    public float TrampleRadius => Mathf.Max(0f, trampleRadius);
+    public float TrampleStrength => Mathf.Max(0f, trampleStrength);
+    public float TrampleFlatten => Mathf.Clamp01(trampleFlatten);
 
     public static GrassSettingsSO CreateRuntimeDefault()
     {
@@ -168,6 +179,9 @@ public sealed class GrassSettingsSO : ScriptableObject
         coverageNoiseStrength = Mathf.Clamp01(coverageNoiseStrength);
         windStrength = Mathf.Max(0f, windStrength);
         windSpeed = Mathf.Max(0f, windSpeed);
+        trampleRadius = Mathf.Max(0f, trampleRadius);
+        trampleStrength = Mathf.Max(0f, trampleStrength);
+        trampleFlatten = Mathf.Clamp01(trampleFlatten);
 
         if (material != null)
         {
