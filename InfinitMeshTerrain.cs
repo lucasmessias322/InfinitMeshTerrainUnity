@@ -192,9 +192,16 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
     private void Awake()
     {
+        hasPlacedInitialSpawn = false;
+
         if (viewer == null && Camera.main != null)
         {
             viewer = Camera.main.transform;
+        }
+
+        if (viewer == null && initialSpawnTarget != null)
+        {
+            viewer = initialSpawnTarget;
         }
     }
 
@@ -205,6 +212,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         SyncBiomeSubscriptions();
         SyncGrassSettingsSubscription();
         SyncTreeSettingsSubscription();
+        ValidateInitialSpawnSettings();
+        TryPlaceViewerAtInitialSpawn();
         ForceRefresh();
     }
 
@@ -247,6 +256,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
     private void OnDisable()
     {
+        ReleaseInitialSpawnHold();
         UnsubscribeTerrainShapeSettings();
         UnsubscribeBiomes();
         UnsubscribeGrassSettings();
@@ -282,6 +292,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         slopeRockStartAngle = Mathf.Clamp(slopeRockStartAngle, 0f, 89.9f);
         slopeRockFullAngle = Mathf.Clamp(slopeRockFullAngle, slopeRockStartAngle + 0.01f, 90f);
         slopeRockStrength = Mathf.Clamp01(slopeRockStrength);
+        ValidateInitialSpawnSettings();
         ValidateTerrainShapeSettings();
         SyncTerrainShapeSettingsSubscription();
         ValidateTerrainLayers();

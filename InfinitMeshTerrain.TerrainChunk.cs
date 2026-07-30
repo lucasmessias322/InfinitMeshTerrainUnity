@@ -42,6 +42,7 @@ public partial class InfinitMeshTerrain
         public EdgeStitching CurrentStitching { get; private set; }
         public EdgeStitching DesiredStitching { get; set; }
         public bool HasMesh { get; private set; }
+        public bool HasActiveCollider => meshCollider != null && meshCollider.enabled && meshCollider.sharedMesh != null;
 
         public void PrepareForUse(Vector2Int coord, Transform parent, float chunkSize, Material material)
         {
