@@ -6,6 +6,7 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
         _TipColor ("Tip Color", Color) = (0.54, 0.76, 0.24, 1)
         _BaseMap ("Base Map", 2D) = "white" {}
         _UseBaseMap ("Use Base Map", Float) = 0
+        _UseBiomeGrassColor ("Use Biome Grass Color", Float) = 0
         _ReceiveShadows ("Receive Shadows", Float) = 1
         _AmbientStrength ("Ambient Strength", Range(0, 1)) = 1
         _AdditionalLightsStrength ("Additional Lights Strength", Range(0, 32)) = 2
@@ -61,6 +62,7 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 half4 _BaseColor;
                 half4 _TipColor;
                 half _UseBaseMap;
+                half _UseBiomeGrassColor;
                 half _ReceiveShadows;
                 half _AmbientStrength;
                 half _AdditionalLightsStrength;
@@ -75,6 +77,18 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
             float4 _MeshGrounding;
             float4 _Trample;
             float3 _TramplePosition;
+
+            half3 BiomeGrassColorToAlbedo(half3 color)
+            {
+#if defined(UNITY_COLORSPACE_GAMMA)
+                return color;
+#else
+                color = saturate(color);
+                half3 linearLow = color / half(12.92);
+                half3 linearHigh = pow(max((color + half(0.055)) / half(1.055), half3(0.0, 0.0, 0.0)), half(2.4));
+                return lerp(linearLow, linearHigh, step(half3(0.04045, 0.04045, 0.04045), color));
+#endif
+            }
 
             struct Attributes
             {
@@ -264,7 +278,10 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
 #endif
 
                 half3 bladeGradient = lerp(_BaseColor.rgb, _TipColor.rgb, input.uv.y);
-                half3 albedo = bladeGradient * input.color * lerp(half3(1.0, 1.0, 1.0), baseMap.rgb, textured);
+                half3 styledAlbedo = bladeGradient * input.color * lerp(half3(1.0, 1.0, 1.0), baseMap.rgb, textured);
+                half3 biomeAlbedo = BiomeGrassColorToAlbedo(input.color);
+                half3 biomeTexturedAlbedo = biomeAlbedo * lerp(half3(1.0, 1.0, 1.0), baseMap.rgb, textured);
+                half3 albedo = lerp(styledAlbedo, biomeTexturedAlbedo, saturate(_UseBiomeGrassColor));
                 half3 additionalAlbedo = lerp(half3(1.0, 1.0, 1.0), albedo, saturate(_AdditionalLightsAlbedoInfluence));
                 half3 color = albedo * lighting + additionalAlbedo * additionalLighting;
                 color = MixFog(color, input.fogFactor);

@@ -25,6 +25,7 @@ public partial class InfinitMeshTerrain
     private static readonly int GrassMeshGroundingPropertyId = Shader.PropertyToID("_MeshGrounding");
     private static readonly int GrassTramplePropertyId = Shader.PropertyToID("_Trample");
     private static readonly int GrassTramplePositionPropertyId = Shader.PropertyToID("_TramplePosition");
+    private static readonly int GrassUseBiomeGrassColorPropertyId = Shader.PropertyToID("_UseBiomeGrassColor");
     private static readonly int GrassSurfaceVerticesPropertyId = Shader.PropertyToID("_GrassSurfaceVertices");
     private static readonly int GrassSurfaceNormalsPropertyId = Shader.PropertyToID("_GrassSurfaceNormals");
     private static readonly int GrassTerrainLayersPropertyId = Shader.PropertyToID("_GrassTerrainLayers");
@@ -299,6 +300,7 @@ public partial class InfinitMeshTerrain
         Vector4 trample = new Vector4(settings.TrampleRadius, settings.TrampleStrength, settings.TrampleFlatten, 0f);
         Vector3 tramplePosition = grassTrampleTarget != null ? grassTrampleTarget.position : viewer.position;
         int layer = gameObject.layer;
+        bool useBiomeGrassColor = GetTerrainBiomeCount() > 0;
         bool deferGrassStreaming = ShouldDeferGrassStreaming();
         float grassCellSize = GetGrassStreamingCellSize(settings);
         Vector2Int viewerCell = WorldToGrassCellCoord(viewer.position, grassCellSize);
@@ -333,6 +335,7 @@ public partial class InfinitMeshTerrain
                 settings.ShadowCastingMode,
                 settings.ReceiveShadows,
                 layer,
+                useBiomeGrassColor,
                 grassComputeShader,
                 finalizeArgsKernel);
         }
@@ -504,6 +507,7 @@ public partial class InfinitMeshTerrain
         int heightLayerCount = GetTerrainHeightLayerCount();
         int heightSplineSampleCount = GetTerrainSplineSampleCount();
         int grassTerrainLayerCount = grassInstanceCapacity > 0 ? GetGrassTerrainLayerCount() : 0;
+        int grassBiomeCount = grassInstanceCapacity > 0 ? GetTerrainBiomeCount() : 0;
 
         GrassBuildTask task = new GrassBuildTask(
             coord,
@@ -514,9 +518,11 @@ public partial class InfinitMeshTerrain
             heightSplineSampleCount,
             grassInstanceCapacity,
             grassTerrainLayerCount,
+            grassBiomeCount,
             useGpuGeneration);
         CopyTerrainHeightLayers(task.HeightLayers, task.HeightSplineSamples);
         CopyGrassTerrainLayers(task.GrassTerrainLayers);
+        CopyBiomeData(task.GrassBiomes);
 
         TerrainSettings terrainSettings = CreateTerrainSettings();
         float2 cellOrigin = GrassCellOrigin(coord, grassCellSize);
@@ -553,10 +559,12 @@ public partial class InfinitMeshTerrain
             Vertices = task.Vertices,
             Normals = task.Normals,
             TerrainLayers = task.GrassTerrainLayers,
+            Biomes = task.GrassBiomes,
             GrassInstances = task.GrassInstances,
             GrassInstanceCounter = task.GrassInstanceCounter,
             GrassBounds = task.GrassBounds,
             Settings = CreateGrassBuildSettings(),
+            BiomeSettings = CreateBiomeSamplingSettings(),
             SlopeTextureSettings = CreateSlopeTextureSettings(),
             ChunkCoord = new int2(coord.x, coord.y),
             ChunkOrigin = cellOrigin,
@@ -657,6 +665,7 @@ public partial class InfinitMeshTerrain
             finalizeArgsKernel,
             drawMesh,
             CreateGrassBuildSettings(),
+            CreateBiomeSamplingSettings(),
             CreateSlopeTextureSettings());
         if (!applied)
         {
@@ -1104,6 +1113,7 @@ public partial class InfinitMeshTerrain
             int finalizeArgsKernel,
             Mesh drawMesh,
             GrassBuildSettings settings,
+            BiomeSamplingSettings biomeSettings,
             SlopeTextureSettings slopeTextureSettings)
         {
             DisposePendingGrassUpload();
@@ -1154,8 +1164,16 @@ public partial class InfinitMeshTerrain
                     terrainLayerBuffer.SetData(EmptyGrassTerrainLayerData);
                 }
 
-                biomeBuffer = new ComputeBuffer(1, GrassBiomeStride, ComputeBufferType.Structured);
-                biomeBuffer.SetData(EmptyGrassBiomeData);
+                int biomeCount = task.GrassBiomes.IsCreated ? Mathf.Min(task.GrassBiomes.Length, biomeSettings.Count) : 0;
+                biomeBuffer = new ComputeBuffer(Mathf.Max(1, biomeCount), GrassBiomeStride, ComputeBufferType.Structured);
+                if (biomeCount > 0)
+                {
+                    biomeBuffer.SetData(task.GrassBiomes, 0, 0, biomeCount);
+                }
+                else
+                {
+                    biomeBuffer.SetData(EmptyGrassBiomeData);
+                }
 
                 int cellsPerAxis = CalculateGrassCellsPerAxis(task.CellSize, settings);
                 ConfigureGrassGenerationKernel(
@@ -1163,8 +1181,10 @@ public partial class InfinitMeshTerrain
                     generateKernel,
                     task,
                     settings,
+                    biomeSettings,
                     slopeTextureSettings,
                     terrainLayerCount,
+                    biomeCount,
                     cellsPerAxis,
                     surfaceVertexBuffer,
                     surfaceNormalBuffer,
@@ -1231,6 +1251,7 @@ public partial class InfinitMeshTerrain
             ShadowCastingMode shadowCastingMode,
             bool receiveShadows,
             int layer,
+            bool useBiomeGrassColor,
             ComputeShader grassArgsComputeShader,
             int finalizeArgsKernel)
         {
@@ -1254,6 +1275,7 @@ public partial class InfinitMeshTerrain
             grassPropertyBlock.SetVector(GrassMeshGroundingPropertyId, meshGrounding);
             grassPropertyBlock.SetVector(GrassTramplePropertyId, trample);
             grassPropertyBlock.SetVector(GrassTramplePositionPropertyId, tramplePosition);
+            grassPropertyBlock.SetFloat(GrassUseBiomeGrassColorPropertyId, useBiomeGrassColor ? 1f : 0f);
 
             Graphics.DrawMeshInstancedIndirect(
                 drawMesh,
@@ -1335,8 +1357,10 @@ public partial class InfinitMeshTerrain
             int kernel,
             GrassBuildTask task,
             GrassBuildSettings settings,
+            BiomeSamplingSettings biomeSettings,
             SlopeTextureSettings slopeTextureSettings,
             int terrainLayerCount,
+            int biomeCount,
             int cellsPerAxis,
             ComputeBuffer surfaceVertexBuffer,
             ComputeBuffer surfaceNormalBuffer,
@@ -1353,16 +1377,16 @@ public partial class InfinitMeshTerrain
             shader.SetBuffer(kernel, GrassCounterPropertyId, grassCounterBuffer);
 
             shader.SetInt(GrassTerrainLayerCountPropertyId, terrainLayerCount);
-            shader.SetInt(GrassBiomeCountPropertyId, 0);
-            shader.SetInt(GrassBiomeSeedPropertyId, settings.TerrainSeed);
-            shader.SetInt(GrassBiomeUseNoisePropertyId, 0);
-            shader.SetFloat(GrassBiomeBlendDistancePropertyId, 0f);
-            shader.SetFloat(GrassBiomeNoiseAmplitudePropertyId, 0f);
-            shader.SetFloat(GrassBiomeNoiseFrequencyPropertyId, 0f);
-            shader.SetInt(GrassBiomeNoiseOctavesPropertyId, 1);
-            shader.SetFloat(GrassBiomeNoiseLacunarityPropertyId, 2f);
-            shader.SetFloat(GrassBiomeNoisePersistencePropertyId, 0.5f);
-            shader.SetVector(GrassBiomeNoiseOffsetPropertyId, Vector4.zero);
+            shader.SetInt(GrassBiomeCountPropertyId, biomeCount);
+            shader.SetInt(GrassBiomeSeedPropertyId, biomeSettings.Seed);
+            shader.SetInt(GrassBiomeUseNoisePropertyId, biomeSettings.UseNoise);
+            shader.SetFloat(GrassBiomeBlendDistancePropertyId, biomeSettings.BlendDistance);
+            shader.SetFloat(GrassBiomeNoiseAmplitudePropertyId, biomeSettings.NoiseAmplitude);
+            shader.SetFloat(GrassBiomeNoiseFrequencyPropertyId, biomeSettings.NoiseFrequency);
+            shader.SetInt(GrassBiomeNoiseOctavesPropertyId, biomeSettings.NoiseOctaves);
+            shader.SetFloat(GrassBiomeNoiseLacunarityPropertyId, biomeSettings.NoiseLacunarity);
+            shader.SetFloat(GrassBiomeNoisePersistencePropertyId, biomeSettings.NoisePersistence);
+            shader.SetVector(GrassBiomeNoiseOffsetPropertyId, new Vector4(biomeSettings.NoiseOffset.x, biomeSettings.NoiseOffset.y, 0f, 0f));
             shader.SetInt(GrassTerrainSeedPropertyId, settings.TerrainSeed);
             shader.SetInt(GrassSeedPropertyId, settings.GrassSeed);
             shader.SetInt(GrassChannelPropertyId, settings.Channel);
@@ -1584,11 +1608,13 @@ public partial class InfinitMeshTerrain
         [ReadOnly] public NativeArray<Vector3> Vertices;
         [ReadOnly] public NativeArray<Vector3> Normals;
         [ReadOnly] public NativeArray<GrassTerrainLayerData> TerrainLayers;
+        [ReadOnly] public NativeArray<GrassBiomeData> Biomes;
         [WriteOnly] public NativeArray<GrassInstanceData> GrassInstances;
         public NativeArray<int> GrassInstanceCounter;
         public NativeArray<GrassChunkBounds> GrassBounds;
 
         public GrassBuildSettings Settings;
+        public BiomeSamplingSettings BiomeSettings;
         public SlopeTextureSettings SlopeTextureSettings;
         public int2 ChunkCoord;
         public float2 ChunkOrigin;
@@ -1664,7 +1690,14 @@ public partial class InfinitMeshTerrain
                             0.05f,
                             1f + (Hash01(instanceHash + 0x510e527fu) * 2f - 1f) * Settings.BladeWidthVariation);
                         float yaw = Hash01(instanceHash + 0x1f83d9abu) * 6.2831855f;
-                        float colorScale = 1f + (Hash01(instanceHash + 0x5be0cd19u) * 2f - 1f) * Settings.ColorVariation;
+                        bool hasBiomeColor = Biomes.IsCreated && BiomeSettings.Count > 0;
+                        float colorScale = hasBiomeColor
+                            ? 1f
+                            : 1f + (Hash01(instanceHash + 0x5be0cd19u) * 2f - 1f) * Settings.ColorVariation;
+                        float3 grassColor = hasBiomeColor
+                            ? EvaluateBiomeGrassColor(positionWS.xz, Biomes, BiomeSettings)
+                            : new float3(1f, 1f, 1f);
+                        float3 instanceColor = math.max(float3.zero, grassColor * colorScale);
                         float3 instanceNormal = math.normalize(math.lerp(new float3(0f, 1f, 0f), normalWS, Settings.NormalAlignment));
                         positionWS.y += Settings.SurfaceOffset;
 
@@ -1672,7 +1705,7 @@ public partial class InfinitMeshTerrain
                         {
                             PositionScale = new float4(positionWS, bladeHeight),
                             NormalYaw = new float4(instanceNormal, yaw),
-                            ColorWidth = new float4(colorScale, colorScale, colorScale, bladeWidth)
+                            ColorWidth = new float4(instanceColor, bladeWidth)
                         };
 
                         float radius = math.max(bladeWidth, Settings.SurfaceOffset) * 1.5f;

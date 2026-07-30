@@ -248,6 +248,8 @@ public partial class InfinitMeshTerrain
             ShouldUseColliderForChunk(coord, task.Lod),
             terrainLayers,
             CreateSlopeTextureSettings(),
+            CreateTerrainBiomeLayerColorDataArray(),
+            CreateBiomeSamplingSettings(),
             !ShouldDeferGrassStreaming(),
             currentTreeSettings,
             currentTreeRenderPrototypes,

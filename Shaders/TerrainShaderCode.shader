@@ -4,6 +4,22 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
     {
         [NoScaleOffset] _SplatMap("Splat Map 0 (RGBA)", 2D) = "black" {}
         [NoScaleOffset] _SplatMap2("Splat Map 1 (RGBA)", 2D) = "black" {}
+        [HideInInspector][NoScaleOffset] _BiomeLayer1ColorMap("Biome Layer 1 Color Map", 2D) = "white" {}
+        [HideInInspector][NoScaleOffset] _BiomeLayer2ColorMap("Biome Layer 2 Color Map", 2D) = "white" {}
+        [HideInInspector][NoScaleOffset] _BiomeLayer3ColorMap("Biome Layer 3 Color Map", 2D) = "white" {}
+        [HideInInspector][NoScaleOffset] _BiomeLayer4ColorMap("Biome Layer 4 Color Map", 2D) = "white" {}
+        [HideInInspector][NoScaleOffset] _BiomeLayer5ColorMap("Biome Layer 5 Color Map", 2D) = "white" {}
+        [HideInInspector][NoScaleOffset] _BiomeLayer6ColorMap("Biome Layer 6 Color Map", 2D) = "white" {}
+        [HideInInspector][NoScaleOffset] _BiomeLayer7ColorMap("Biome Layer 7 Color Map", 2D) = "white" {}
+        [HideInInspector][NoScaleOffset] _BiomeLayer8ColorMap("Biome Layer 8 Color Map", 2D) = "white" {}
+        [HideInInspector] _UseBiomeLayer1ColorMap("Use Biome Layer 1 Color Map", Float) = 0
+        [HideInInspector] _UseBiomeLayer2ColorMap("Use Biome Layer 2 Color Map", Float) = 0
+        [HideInInspector] _UseBiomeLayer3ColorMap("Use Biome Layer 3 Color Map", Float) = 0
+        [HideInInspector] _UseBiomeLayer4ColorMap("Use Biome Layer 4 Color Map", Float) = 0
+        [HideInInspector] _UseBiomeLayer5ColorMap("Use Biome Layer 5 Color Map", Float) = 0
+        [HideInInspector] _UseBiomeLayer6ColorMap("Use Biome Layer 6 Color Map", Float) = 0
+        [HideInInspector] _UseBiomeLayer7ColorMap("Use Biome Layer 7 Color Map", Float) = 0
+        [HideInInspector] _UseBiomeLayer8ColorMap("Use Biome Layer 8 Color Map", Float) = 0
 
         [NoScaleOffset] _Texture2D_R("Layer 1 Albedo (Map0 R)", 2D) = "white" {}
         [NoScaleOffset] _Texture2D_G("Layer 2 Albedo (Map0 G)", 2D) = "white" {}
@@ -87,6 +103,14 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
 
         TEXTURE2D(_SplatMap);
         TEXTURE2D(_SplatMap2);
+        TEXTURE2D(_BiomeLayer1ColorMap);
+        TEXTURE2D(_BiomeLayer2ColorMap);
+        TEXTURE2D(_BiomeLayer3ColorMap);
+        TEXTURE2D(_BiomeLayer4ColorMap);
+        TEXTURE2D(_BiomeLayer5ColorMap);
+        TEXTURE2D(_BiomeLayer6ColorMap);
+        TEXTURE2D(_BiomeLayer7ColorMap);
+        TEXTURE2D(_BiomeLayer8ColorMap);
 
         TEXTURE2D(_Texture2D_R);
         TEXTURE2D(_Texture2D_G);
@@ -146,6 +170,14 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
             half _Metallic;
             half _Smoothness;
             half _Occlusion;
+            half _UseBiomeLayer1ColorMap;
+            half _UseBiomeLayer2ColorMap;
+            half _UseBiomeLayer3ColorMap;
+            half _UseBiomeLayer4ColorMap;
+            half _UseBiomeLayer5ColorMap;
+            half _UseBiomeLayer6ColorMap;
+            half _UseBiomeLayer7ColorMap;
+            half _UseBiomeLayer8ColorMap;
         CBUFFER_END
 
         struct TerrainWeights
@@ -218,14 +250,32 @@ Shader "InfinitMeshTerrain/TerrainShaderCode"
         half3 BlendTerrainAlbedo(float2 uv, TerrainWeights weights)
         {
             half3 albedo = half3(0.0, 0.0, 0.0);
-            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_R, sampler_LinearRepeat), uv, _Layer1TextureScale, _Layer1Color) * weights.map0.r;
-            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_G, sampler_LinearRepeat), uv, _Layer2TextureScale, _Layer2Color) * weights.map0.g;
-            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_B, sampler_LinearRepeat), uv, _Layer3TextureScale, _Layer3Color) * weights.map0.b;
-            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_A, sampler_LinearRepeat), uv, _Layer4TextureScale, _Layer4Color) * weights.map0.a;
-            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_R2, sampler_LinearRepeat), uv, _Layer5TextureScale, _Layer5Color) * weights.map1.r;
-            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_G2, sampler_LinearRepeat), uv, _Layer6TextureScale, _Layer6Color) * weights.map1.g;
-            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_B2, sampler_LinearRepeat), uv, _Layer7TextureScale, _Layer7Color) * weights.map1.b;
-            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_A2, sampler_LinearRepeat), uv, _Layer8TextureScale, _Layer8Color) * weights.map1.a;
+            half4 layer1Color = _Layer1Color;
+            half4 layer2Color = _Layer2Color;
+            half4 layer3Color = _Layer3Color;
+            half4 layer4Color = _Layer4Color;
+            half4 layer5Color = _Layer5Color;
+            half4 layer6Color = _Layer6Color;
+            half4 layer7Color = _Layer7Color;
+            half4 layer8Color = _Layer8Color;
+
+            layer1Color.rgb = lerp(layer1Color.rgb, SAMPLE_TEXTURE2D(_BiomeLayer1ColorMap, sampler_LinearClamp, uv).rgb, saturate(_UseBiomeLayer1ColorMap));
+            layer2Color.rgb = lerp(layer2Color.rgb, SAMPLE_TEXTURE2D(_BiomeLayer2ColorMap, sampler_LinearClamp, uv).rgb, saturate(_UseBiomeLayer2ColorMap));
+            layer3Color.rgb = lerp(layer3Color.rgb, SAMPLE_TEXTURE2D(_BiomeLayer3ColorMap, sampler_LinearClamp, uv).rgb, saturate(_UseBiomeLayer3ColorMap));
+            layer4Color.rgb = lerp(layer4Color.rgb, SAMPLE_TEXTURE2D(_BiomeLayer4ColorMap, sampler_LinearClamp, uv).rgb, saturate(_UseBiomeLayer4ColorMap));
+            layer5Color.rgb = lerp(layer5Color.rgb, SAMPLE_TEXTURE2D(_BiomeLayer5ColorMap, sampler_LinearClamp, uv).rgb, saturate(_UseBiomeLayer5ColorMap));
+            layer6Color.rgb = lerp(layer6Color.rgb, SAMPLE_TEXTURE2D(_BiomeLayer6ColorMap, sampler_LinearClamp, uv).rgb, saturate(_UseBiomeLayer6ColorMap));
+            layer7Color.rgb = lerp(layer7Color.rgb, SAMPLE_TEXTURE2D(_BiomeLayer7ColorMap, sampler_LinearClamp, uv).rgb, saturate(_UseBiomeLayer7ColorMap));
+            layer8Color.rgb = lerp(layer8Color.rgb, SAMPLE_TEXTURE2D(_BiomeLayer8ColorMap, sampler_LinearClamp, uv).rgb, saturate(_UseBiomeLayer8ColorMap));
+
+            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_R, sampler_LinearRepeat), uv, _Layer1TextureScale, layer1Color) * weights.map0.r;
+            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_G, sampler_LinearRepeat), uv, _Layer2TextureScale, layer2Color) * weights.map0.g;
+            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_B, sampler_LinearRepeat), uv, _Layer3TextureScale, layer3Color) * weights.map0.b;
+            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_A, sampler_LinearRepeat), uv, _Layer4TextureScale, layer4Color) * weights.map0.a;
+            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_R2, sampler_LinearRepeat), uv, _Layer5TextureScale, layer5Color) * weights.map1.r;
+            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_G2, sampler_LinearRepeat), uv, _Layer6TextureScale, layer6Color) * weights.map1.g;
+            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_B2, sampler_LinearRepeat), uv, _Layer7TextureScale, layer7Color) * weights.map1.b;
+            albedo += SampleLayerAlbedo(TEXTURE2D_ARGS(_Texture2D_A2, sampler_LinearRepeat), uv, _Layer8TextureScale, layer8Color) * weights.map1.a;
             return albedo;
         }
 

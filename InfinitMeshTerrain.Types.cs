@@ -157,6 +157,27 @@ public partial class InfinitMeshTerrain
         public float4 GrassColor;
     }
 
+    private struct BiomeSamplingSettings
+    {
+        public int Count;
+        public int Seed;
+        public int UseNoise;
+        public float BlendDistance;
+        public float NoiseAmplitude;
+        public float NoiseFrequency;
+        public int NoiseOctaves;
+        public float NoiseLacunarity;
+        public float NoisePersistence;
+        public float2 NoiseOffset;
+    }
+
+    private sealed class TerrainBiomeLayerColorData
+    {
+        public float4 DistanceRange;
+        public bool[] HasLayerColor;
+        public Color[] LayerColors;
+    }
+
     private struct GrassBuildSettings
     {
         public int TerrainSeed;

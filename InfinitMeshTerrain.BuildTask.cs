@@ -140,6 +140,7 @@ public partial class InfinitMeshTerrain
             int heightSplineSampleCount,
             int grassInstanceCapacity,
             int grassTerrainLayerCount,
+            int grassBiomeCount,
             bool useGpuGeneration)
         {
             Coord = coord;
@@ -167,6 +168,11 @@ public partial class InfinitMeshTerrain
                 GrassTerrainLayers = new NativeArray<GrassTerrainLayerData>(Mathf.Max(0, grassTerrainLayerCount), Allocator.Persistent);
             }
 
+            if (grassBiomeCount > 0)
+            {
+                GrassBiomes = new NativeArray<GrassBiomeData>(Mathf.Max(0, grassBiomeCount), Allocator.Persistent);
+            }
+
             if (!UseGpuGeneration && GrassInstanceCapacity > 0)
             {
                 GrassInstances = new NativeArray<GrassInstanceData>(GrassInstanceCapacity, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -191,6 +197,7 @@ public partial class InfinitMeshTerrain
         public NativeArray<int> GrassInstanceCounter;
         public NativeArray<GrassChunkBounds> GrassBounds;
         public NativeArray<GrassTerrainLayerData> GrassTerrainLayers;
+        public NativeArray<GrassBiomeData> GrassBiomes;
         public bool HasGrassInstances => GrassInstances.IsCreated
             && GrassInstanceCounter.IsCreated
             && GrassBounds.IsCreated
@@ -241,6 +248,11 @@ public partial class InfinitMeshTerrain
             if (GrassTerrainLayers.IsCreated)
             {
                 GrassTerrainLayers.Dispose();
+            }
+
+            if (GrassBiomes.IsCreated)
+            {
+                GrassBiomes.Dispose();
             }
         }
     }

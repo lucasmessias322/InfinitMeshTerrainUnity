@@ -13,6 +13,30 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         Shader.PropertyToID("_SplatMap2")
     };
 
+    private static readonly int[] BiomeLayerColorMapPropertyIds =
+    {
+        Shader.PropertyToID("_BiomeLayer1ColorMap"),
+        Shader.PropertyToID("_BiomeLayer2ColorMap"),
+        Shader.PropertyToID("_BiomeLayer3ColorMap"),
+        Shader.PropertyToID("_BiomeLayer4ColorMap"),
+        Shader.PropertyToID("_BiomeLayer5ColorMap"),
+        Shader.PropertyToID("_BiomeLayer6ColorMap"),
+        Shader.PropertyToID("_BiomeLayer7ColorMap"),
+        Shader.PropertyToID("_BiomeLayer8ColorMap")
+    };
+
+    private static readonly int[] UseBiomeLayerColorMapPropertyIds =
+    {
+        Shader.PropertyToID("_UseBiomeLayer1ColorMap"),
+        Shader.PropertyToID("_UseBiomeLayer2ColorMap"),
+        Shader.PropertyToID("_UseBiomeLayer3ColorMap"),
+        Shader.PropertyToID("_UseBiomeLayer4ColorMap"),
+        Shader.PropertyToID("_UseBiomeLayer5ColorMap"),
+        Shader.PropertyToID("_UseBiomeLayer6ColorMap"),
+        Shader.PropertyToID("_UseBiomeLayer7ColorMap"),
+        Shader.PropertyToID("_UseBiomeLayer8ColorMap")
+    };
+
     private static readonly int[] LayerTexturePropertyIds =
     {
         Shader.PropertyToID("_Texture2D_R"),
@@ -177,6 +201,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private void OnEnable()
     {
         SyncTerrainShapeSettingsSubscription();
+        ValidateBiomeSettings();
+        SyncBiomeSubscriptions();
         SyncGrassSettingsSubscription();
         SyncTreeSettingsSubscription();
         ForceRefresh();
@@ -222,6 +248,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private void OnDisable()
     {
         UnsubscribeTerrainShapeSettings();
+        UnsubscribeBiomes();
         UnsubscribeGrassSettings();
         UnsubscribeTreeSettings();
         CompleteAndDisposeAllTasks();
@@ -258,6 +285,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         ValidateTerrainShapeSettings();
         SyncTerrainShapeSettingsSubscription();
         ValidateTerrainLayers();
+        ValidateBiomeSettings();
+        SyncBiomeSubscriptions();
         ValidateGrassSettings();
         SyncGrassSettingsSubscription();
         ValidateTreeSettings();

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -13,6 +14,7 @@ public partial class InfinitMeshTerrain
         private readonly Mesh mesh;
         private MaterialPropertyBlock propertyBlock;
         private readonly Texture2D[] splatMaps = new Texture2D[SplatMapCount];
+        private readonly Texture2D[] biomeLayerColorMaps = new Texture2D[MaxTerrainLayerCount];
 
         public TerrainChunk(
             Vector2Int coord,
@@ -58,6 +60,8 @@ public partial class InfinitMeshTerrain
             bool enableCollider,
             TerrainHeightLayer[] terrainLayers,
             SlopeTextureSettings slopeTextureSettings,
+            TerrainBiomeLayerColorData[] biomeData,
+            BiomeSamplingSettings biomeSettings,
             bool applyGrass,
             TreeSettingsSO treeSettings,
             IReadOnlyList<TreeRenderPrototype> treeRenderPrototypes,
@@ -78,7 +82,7 @@ public partial class InfinitMeshTerrain
             mesh.RecalculateBounds();
 
             SetMaterial(material);
-            RebuildSplatMap(task, terrainLayers, slopeTextureSettings);
+            RebuildSplatMap(task, terrainLayers, slopeTextureSettings, biomeData, biomeSettings, chunkSize);
             meshRenderer.shadowCastingMode = ShadowCastingMode.On;
             meshRenderer.receiveShadows = true;
             meshRenderer.renderingLayerMask = 1u;
@@ -167,6 +171,7 @@ public partial class InfinitMeshTerrain
             DisableCollider();
             ClearGrass();
             ClearTrees();
+            DestroyBiomeLayerColorMaps();
             mesh.Clear();
             mesh.indexFormat = IndexFormat.UInt32;
             CurrentLod = -1;
@@ -188,6 +193,7 @@ public partial class InfinitMeshTerrain
             ClearGrass();
             ClearTrees();
             DestroySplatMaps();
+            DestroyBiomeLayerColorMaps();
 
             if (Application.isPlaying)
             {
@@ -204,7 +210,10 @@ public partial class InfinitMeshTerrain
         private void RebuildSplatMap(
             TerrainBuildTask task,
             TerrainHeightLayer[] terrainLayers,
-            SlopeTextureSettings slopeTextureSettings)
+            SlopeTextureSettings slopeTextureSettings,
+            TerrainBiomeLayerColorData[] biomeData,
+            BiomeSamplingSettings biomeSettings,
+            float chunkSize)
         {
             int resolution = task.Resolution;
             if (resolution <= 0 || task.BaseVertexCount <= 0)
@@ -234,6 +243,28 @@ public partial class InfinitMeshTerrain
             TerrainHeightLayer[] sortedLayers = CopySortedLayers(terrainLayers);
             Color32[] pixels0 = new Color32[resolution * resolution];
             Color32[] pixels1 = new Color32[pixels0.Length];
+            Color[] baseLayerColors = CreateLayerBaseColors(sortedLayers);
+            Color32[][] biomeLayerPixels = new Color32[MaxTerrainLayerCount][];
+            bool hasBiomeLayerData = biomeData != null && biomeData.Length > 0 && biomeSettings.Count > 0;
+            if (hasBiomeLayerData)
+            {
+                for (int channelIndex = 0; channelIndex < MaxTerrainLayerCount; channelIndex++)
+                {
+                    if (HasTerrainBiomeLayerColorOverride(biomeData, biomeSettings, channelIndex))
+                    {
+                        biomeLayerPixels[channelIndex] = new Color32[pixels0.Length];
+                        EnsureBiomeLayerColorMap(channelIndex, resolution);
+                    }
+                    else
+                    {
+                        DestroyBiomeLayerColorMap(channelIndex);
+                    }
+                }
+            }
+            else
+            {
+                DestroyBiomeLayerColorMaps();
+            }
 
             for (int i = 0; i < pixels0.Length; i++)
             {
@@ -242,6 +273,28 @@ public partial class InfinitMeshTerrain
                 weights = ApplySlopeTexture(weights, task.Normals[i], slopeTextureSettings);
                 pixels0[i] = ToColor32(weights.Map0);
                 pixels1[i] = ToColor32(weights.Map1);
+
+                if (hasBiomeLayerData)
+                {
+                    Vector3 vertex = task.Vertices[i];
+                    float2 worldXZ = new float2(
+                        Coord.x * chunkSize + vertex.x,
+                        Coord.y * chunkSize + vertex.z);
+                    for (int channelIndex = 0; channelIndex < biomeLayerPixels.Length; channelIndex++)
+                    {
+                        if (biomeLayerPixels[channelIndex] == null)
+                        {
+                            continue;
+                        }
+
+                        biomeLayerPixels[channelIndex][i] = ToColor32(EvaluateBiomeLayerColor(
+                            worldXZ,
+                            biomeData,
+                            biomeSettings,
+                            channelIndex,
+                            baseLayerColors[channelIndex]));
+                    }
+                }
             }
 
             splatMaps[0].SetPixels32(pixels0);
@@ -249,10 +302,32 @@ public partial class InfinitMeshTerrain
             splatMaps[1].SetPixels32(pixels1);
             splatMaps[1].Apply(false, false);
 
+            for (int channelIndex = 0; channelIndex < biomeLayerPixels.Length; channelIndex++)
+            {
+                if (biomeLayerPixels[channelIndex] == null || biomeLayerColorMaps[channelIndex] == null)
+                {
+                    continue;
+                }
+
+                biomeLayerColorMaps[channelIndex].SetPixels32(biomeLayerPixels[channelIndex]);
+                biomeLayerColorMaps[channelIndex].Apply(false, false);
+            }
+
             EnsurePropertyBlock();
             for (int mapIndex = 0; mapIndex < splatMaps.Length; mapIndex++)
             {
                 propertyBlock.SetTexture(SplatMapPropertyIds[mapIndex], splatMaps[mapIndex]);
+            }
+
+            for (int channelIndex = 0; channelIndex < MaxTerrainLayerCount; channelIndex++)
+            {
+                bool hasLayerColorMap = biomeLayerPixels[channelIndex] != null && biomeLayerColorMaps[channelIndex] != null;
+                propertyBlock.SetTexture(
+                    BiomeLayerColorMapPropertyIds[channelIndex],
+                    hasLayerColorMap ? biomeLayerColorMaps[channelIndex] : Texture2D.whiteTexture);
+                propertyBlock.SetFloat(
+                    UseBiomeLayerColorMapPropertyIds[channelIndex],
+                    hasLayerColorMap ? 1f : 0f);
             }
 
             SetLayerProperties(sortedLayers);
@@ -327,6 +402,65 @@ public partial class InfinitMeshTerrain
             splatMaps[mapIndex] = null;
         }
 
+        private void EnsureBiomeLayerColorMap(int channelIndex, int resolution)
+        {
+            if (channelIndex < 0 || channelIndex >= biomeLayerColorMaps.Length)
+            {
+                return;
+            }
+
+            Texture2D biomeLayerColorMap = biomeLayerColorMaps[channelIndex];
+            if (biomeLayerColorMap != null
+                && biomeLayerColorMap.width == resolution
+                && biomeLayerColorMap.height == resolution)
+            {
+                biomeLayerColorMap.name = $"Biome Layer {channelIndex + 1} Color Map {Coord.x}, {Coord.y}";
+                return;
+            }
+
+            DestroyBiomeLayerColorMap(channelIndex);
+            biomeLayerColorMaps[channelIndex] = new Texture2D(resolution, resolution, TextureFormat.RGBA32, false, false)
+            {
+                name = $"Biome Layer {channelIndex + 1} Color Map {Coord.x}, {Coord.y}",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+                hideFlags = HideFlags.DontSave
+            };
+        }
+
+        private void DestroyBiomeLayerColorMaps()
+        {
+            for (int channelIndex = 0; channelIndex < biomeLayerColorMaps.Length; channelIndex++)
+            {
+                DestroyBiomeLayerColorMap(channelIndex);
+            }
+        }
+
+        private void DestroyBiomeLayerColorMap(int channelIndex)
+        {
+            if (channelIndex < 0 || channelIndex >= biomeLayerColorMaps.Length)
+            {
+                return;
+            }
+
+            Texture2D biomeLayerColorMap = biomeLayerColorMaps[channelIndex];
+            if (biomeLayerColorMap == null)
+            {
+                return;
+            }
+
+            if (Application.isPlaying)
+            {
+                Destroy(biomeLayerColorMap);
+            }
+            else
+            {
+                DestroyImmediate(biomeLayerColorMap);
+            }
+
+            biomeLayerColorMaps[channelIndex] = null;
+        }
+
         private static TerrainHeightLayer[] CopySortedLayers(TerrainHeightLayer[] terrainLayers)
         {
             if (terrainLayers == null || terrainLayers.Length == 0)
@@ -338,6 +472,29 @@ public partial class InfinitMeshTerrain
             Array.Copy(terrainLayers, sortedLayers, terrainLayers.Length);
             Array.Sort(sortedLayers, (a, b) => a.startHeight.CompareTo(b.startHeight));
             return sortedLayers;
+        }
+
+        private static Color[] CreateLayerBaseColors(TerrainHeightLayer[] terrainLayers)
+        {
+            Color[] layerColors = new Color[MaxTerrainLayerCount];
+            for (int i = 0; i < layerColors.Length; i++)
+            {
+                layerColors[i] = Color.white;
+            }
+
+            if (terrainLayers == null)
+            {
+                return layerColors;
+            }
+
+            for (int i = 0; i < terrainLayers.Length; i++)
+            {
+                TerrainHeightLayer layer = terrainLayers[i];
+                int channelIndex = Mathf.Clamp((int)layer.channel, 0, MaxTerrainLayerCount - 1);
+                layerColors[channelIndex] = NormalizeLayerColor(layer.color);
+            }
+
+            return layerColors;
         }
 
         private struct SplatWeights
@@ -451,6 +608,15 @@ public partial class InfinitMeshTerrain
                 ToByte(weights.y),
                 ToByte(weights.z),
                 ToByte(weights.w));
+        }
+
+        private static Color32 ToColor32(float3 color)
+        {
+            return new Color32(
+                ToByte(color.x),
+                ToByte(color.y),
+                ToByte(color.z),
+                255);
         }
 
         private static float SumWeights(Vector4 weights)

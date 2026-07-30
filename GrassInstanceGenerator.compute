@@ -563,7 +563,9 @@ void GenerateGrassInstances(uint3 id : SV_DispatchThreadID)
             0.05,
             1.0 + (Hash01(instanceHash + 0x510e527fu) * 2.0 - 1.0) * _GrassBladeWidthVariation);
         float yaw = Hash01(instanceHash + 0x1f83d9abu) * 6.2831855;
-        float colorScale = 1.0 + (Hash01(instanceHash + 0x5be0cd19u) * 2.0 - 1.0) * _GrassColorVariation;
+        float colorScale = _GrassBiomeCount > 0
+            ? 1.0
+            : 1.0 + (Hash01(instanceHash + 0x5be0cd19u) * 2.0 - 1.0) * _GrassColorVariation;
         float3 grassColor = _GrassBiomeCount > 0
             ? EvaluateBiomeGrassColor(positionWS.xz)
             : float3(1.0, 1.0, 1.0);
