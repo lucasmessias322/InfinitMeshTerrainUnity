@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -7,11 +8,13 @@ public partial class InfinitMeshTerrain
 {
     private const int TreeDrawBatchSize = 1023;
     private static readonly TreeRenderPrototype[] EmptyTreeRenderPrototypes = Array.Empty<TreeRenderPrototype>();
+    private static readonly TreeBiomeRenderData[] EmptyTreeBiomeRenderData = Array.Empty<TreeBiomeRenderData>();
 
     [Header("Trees")]
     [SerializeField] private TreeSettingsSO treeSettings;
 
     private readonly List<TreeRenderPrototype> treeRenderPrototypes = new List<TreeRenderPrototype>();
+    private readonly List<TreeBiomeRenderData> treeBiomeRenderData = new List<TreeBiomeRenderData>();
     private readonly HashSet<ulong> removedTreeIds = new HashSet<ulong>();
     private readonly Dictionary<ulong, ActiveInteractiveTree> activeInteractiveTrees = new Dictionary<ulong, ActiveInteractiveTree>();
     private readonly Dictionary<GameObject, Stack<GameObject>> interactiveTreePools = new Dictionary<GameObject, Stack<GameObject>>();
@@ -21,7 +24,9 @@ public partial class InfinitMeshTerrain
     private readonly Matrix4x4[] treeDrawScratch = new Matrix4x4[TreeDrawBatchSize];
     private TreeSettingsSO cachedTreeRenderSettings;
     private bool treeRenderCacheDirty = true;
-    private float cachedTreeTotalDensity;
+    private bool cachedHasBiomeSpecificTreeSpawns;
+    private float cachedGlobalTreeTotalDensity;
+    private float cachedTreeMaxDensity;
     private Transform interactiveTreeRoot;
 
     private void ValidateTreeSettings()
@@ -108,28 +113,143 @@ public partial class InfinitMeshTerrain
         cachedTreeRenderSettings = settings;
         treeRenderCacheDirty = false;
         treeRenderPrototypes.Clear();
-        cachedTreeTotalDensity = 0f;
+        treeBiomeRenderData.Clear();
+        cachedHasBiomeSpecificTreeSpawns = false;
+        cachedGlobalTreeTotalDensity = 0f;
+        cachedTreeMaxDensity = 0f;
 
         IReadOnlyList<TreePrototypeSettings> prototypes = settings.Prototypes;
+        int nextPrototypeIndex = prototypes.Count;
         for (int i = 0; i < prototypes.Count; i++)
         {
-            TreePrototypeSettings prototype = prototypes[i];
-            if (prototype == null || !prototype.IsSpawnable)
-            {
-                continue;
-            }
-
-            TreeRenderPrototype renderPrototype = new TreeRenderPrototype(prototype, i, CollectTreeRenderVariations(prototype));
-            if (!renderPrototype.HasRenderItems)
+            if (!TryCreateTreeRenderPrototype(prototypes[i], i, out TreeRenderPrototype renderPrototype))
             {
                 continue;
             }
 
             treeRenderPrototypes.Add(renderPrototype);
-            cachedTreeTotalDensity += prototype.DensityPerSquareMeter;
+            cachedGlobalTreeTotalDensity += renderPrototype.DensityPerSquareMeter;
+        }
+
+        BuildTreeBiomeRenderData(ref nextPrototypeIndex);
+        if (!cachedHasBiomeSpecificTreeSpawns)
+        {
+            cachedTreeMaxDensity = cachedGlobalTreeTotalDensity;
         }
 
         return treeRenderPrototypes;
+    }
+
+    private IReadOnlyList<TreeBiomeRenderData> GetTreeBiomeRenderData(TreeSettingsSO settings)
+    {
+        if (settings == null)
+        {
+            return EmptyTreeBiomeRenderData;
+        }
+
+        GetTreeRenderPrototypes(settings);
+        return treeBiomeRenderData;
+    }
+
+    private bool HasBiomeSpecificTreeSpawns(TreeSettingsSO settings)
+    {
+        if (settings == null)
+        {
+            return false;
+        }
+
+        GetTreeRenderPrototypes(settings);
+        return cachedHasBiomeSpecificTreeSpawns;
+    }
+
+    private bool TryCreateTreeRenderPrototype(
+        TreePrototypeSettings prototype,
+        int prototypeIndex,
+        out TreeRenderPrototype renderPrototype)
+    {
+        renderPrototype = null;
+        if (prototype == null || !prototype.IsSpawnable)
+        {
+            return false;
+        }
+
+        renderPrototype = new TreeRenderPrototype(prototype, prototypeIndex, CollectTreeRenderVariations(prototype));
+        if (renderPrototype.HasRenderItems)
+        {
+            return true;
+        }
+
+        renderPrototype = null;
+        return false;
+    }
+
+    private void BuildTreeBiomeRenderData(ref int nextPrototypeIndex)
+    {
+        int biomeCount = GetTerrainBiomeCount();
+        if (biomeCount <= 0 || biomes == null)
+        {
+            return;
+        }
+
+        int scannedCount = 0;
+        for (int i = 0; i < biomes.Length && scannedCount < MaxTerrainBiomeCount; i++)
+        {
+            TerrainBiomeSO biome = biomes[i];
+            if (biome == null)
+            {
+                continue;
+            }
+
+            biome.ValidateValues();
+            List<TreeRenderPrototype> biomePrototypes = new List<TreeRenderPrototype>();
+            float totalDensity = 0f;
+            IReadOnlyList<TreePrototypeSettings> prototypes = biome.TreePrototypes;
+            for (int prototypeIndex = 0; prototypeIndex < prototypes.Count; prototypeIndex++)
+            {
+                if (!TryCreateTreeRenderPrototype(
+                    prototypes[prototypeIndex],
+                    nextPrototypeIndex,
+                    out TreeRenderPrototype renderPrototype))
+                {
+                    continue;
+                }
+
+                nextPrototypeIndex++;
+                treeRenderPrototypes.Add(renderPrototype);
+                biomePrototypes.Add(renderPrototype);
+                totalDensity += renderPrototype.DensityPerSquareMeter;
+            }
+
+            if (totalDensity > 0f)
+            {
+                cachedHasBiomeSpecificTreeSpawns = true;
+                cachedTreeMaxDensity = Mathf.Max(cachedTreeMaxDensity, totalDensity);
+            }
+
+            treeBiomeRenderData.Add(new TreeBiomeRenderData(
+                new float4(
+                    biome.MinDistanceFromCenter,
+                    biome.MaxDistanceFromCenter,
+                    biome.SelectionWeight,
+                    scannedCount),
+                biomePrototypes.ToArray(),
+                totalDensity));
+            scannedCount++;
+        }
+
+        treeBiomeRenderData.Sort(CompareTreeBiomeRenderData);
+    }
+
+    private static int CompareTreeBiomeRenderData(TreeBiomeRenderData a, TreeBiomeRenderData b)
+    {
+        int minComparison = a.DistanceRange.x.CompareTo(b.DistanceRange.x);
+        if (minComparison != 0)
+        {
+            return minComparison;
+        }
+
+        int maxComparison = a.DistanceRange.y.CompareTo(b.DistanceRange.y);
+        return maxComparison != 0 ? maxComparison : a.DistanceRange.w.CompareTo(b.DistanceRange.w);
     }
 
     private static TreeRenderVariation[] CollectTreeRenderVariations(TreePrototypeSettings prototype)
@@ -749,9 +869,14 @@ public partial class InfinitMeshTerrain
         return items.ToArray();
     }
 
-    private float GetTreeTotalDensity()
+    private float GetGlobalTreeTotalDensity()
     {
-        return cachedTreeTotalDensity;
+        return cachedGlobalTreeTotalDensity;
+    }
+
+    private float GetTreeMaxDensity()
+    {
+        return cachedTreeMaxDensity;
     }
 
     private bool IsChunkInsideTreeDistance(Vector2Int coord, float distance)
@@ -782,8 +907,11 @@ public partial class InfinitMeshTerrain
         ReleaseAllInteractiveTrees(true);
         ClearTreesFromRuntimeChunks();
         treeRenderPrototypes.Clear();
+        treeBiomeRenderData.Clear();
         cachedTreeRenderSettings = null;
-        cachedTreeTotalDensity = 0f;
+        cachedHasBiomeSpecificTreeSpawns = false;
+        cachedGlobalTreeTotalDensity = 0f;
+        cachedTreeMaxDensity = 0f;
         treeRenderCacheDirty = true;
     }
 
@@ -925,6 +1053,21 @@ public partial class InfinitMeshTerrain
                 return (value >> 8) * (1f / 16777216f);
             }
         }
+    }
+
+    private sealed class TreeBiomeRenderData
+    {
+        public TreeBiomeRenderData(float4 distanceRange, TreeRenderPrototype[] prototypes, float totalDensity)
+        {
+            DistanceRange = distanceRange;
+            Prototypes = prototypes != null ? prototypes : Array.Empty<TreeRenderPrototype>();
+            TotalDensity = Mathf.Max(0f, totalDensity);
+        }
+
+        public float4 DistanceRange { get; }
+        public TreeRenderPrototype[] Prototypes { get; }
+        public float TotalDensity { get; }
+        public bool HasPrototypes => TotalDensity > 0f && Prototypes.Length > 0;
     }
 
     private readonly struct TreeRenderVariation
@@ -1157,23 +1300,30 @@ public partial class InfinitMeshTerrain
             TerrainBuildTask task,
             TreeSettingsSO settings,
             IReadOnlyList<TreeRenderPrototype> renderPrototypes,
-            float totalDensity,
+            IReadOnlyList<TreeBiomeRenderData> treeBiomeData,
+            float globalTreeTotalDensity,
+            float maxTreeDensity,
+            bool useBiomeTreeSpawns,
             bool shouldBuildTrees,
             int terrainSeed,
             float chunkSize,
             bool enableWater,
             float waterHeight,
             TerrainHeightLayer[] terrainLayers,
-            SlopeTextureSettings slopeTextureSettings)
+            SlopeTextureSettings slopeTextureSettings,
+            BiomeSamplingSettings biomeSettings)
         {
             ClearTrees();
 
+            float candidateDensity = useBiomeTreeSpawns
+                ? Mathf.Max(0f, maxTreeDensity)
+                : Mathf.Max(0f, globalTreeTotalDensity);
             if (!shouldBuildTrees
                 || settings == null
                 || !settings.EnableTrees
                 || renderPrototypes == null
                 || renderPrototypes.Count == 0
-                || totalDensity <= 0f
+                || candidateDensity <= 0f
                 || settings.MaxInstancesPerChunk <= 0
                 || task.BaseVertexCount <= 0
                 || task.Resolution < 2)
@@ -1186,7 +1336,7 @@ public partial class InfinitMeshTerrain
             TerrainHeightLayer[] sortedLayers = CopySortedLayers(terrainLayers);
             int cellsPerAxis = Mathf.Max(1, Mathf.CeilToInt(chunkSize / settings.CellSize));
             float cellSize = chunkSize / cellsPerAxis;
-            float expectedPerCell = totalDensity * cellSize * cellSize;
+            float expectedPerCell = candidateDensity * cellSize * cellSize;
             int maxPerCell = settings.MaxInstancesPerCell;
             int spawnedCount = 0;
             Matrix4x4 chunkLocalToWorld = gameObject.transform.localToWorldMatrix;
@@ -1207,12 +1357,6 @@ public partial class InfinitMeshTerrain
                     for (int candidate = 0; candidate < candidateCount && spawnedCount < settings.MaxInstancesPerChunk; candidate++)
                     {
                         uint instanceHash = Hash((int)cellHash, candidate, x * 73856093, z * 19349663, terrainSeed, settings.SeedOffset);
-                        TreeRenderPrototype prototype = PickPrototype(renderPrototypes, Hash01(instanceHash + 0x9e3779b9u) * totalDensity);
-                        if (prototype == null)
-                        {
-                            continue;
-                        }
-
                         Vector2 jitter = new Vector2(
                             Hash01(instanceHash + 0xbb67ae85u),
                             Hash01(instanceHash + 0x3c6ef372u));
@@ -1226,8 +1370,30 @@ public partial class InfinitMeshTerrain
                             continue;
                         }
 
-                        TreePrototypeSettings prototypeSettings = prototype.Settings;
                         Vector2 worldXZ = new Vector2(Coord.x * chunkSize + local.x, Coord.y * chunkSize + local.y);
+                        IReadOnlyList<TreeRenderPrototype> spawnPrototypes = renderPrototypes;
+                        float spawnTotalDensity = globalTreeTotalDensity;
+                        if (useBiomeTreeSpawns)
+                        {
+                            TreeBiomeRenderData biomeTrees = ResolveTreeBiomeRenderData(worldXZ, treeBiomeData, biomeSettings);
+                            if (biomeTrees == null || !biomeTrees.HasPrototypes)
+                            {
+                                continue;
+                            }
+
+                            spawnPrototypes = biomeTrees.Prototypes;
+                            spawnTotalDensity = biomeTrees.TotalDensity;
+                        }
+
+                        TreeRenderPrototype prototype = PickPrototype(
+                            spawnPrototypes,
+                            Hash01(instanceHash + 0x9e3779b9u) * spawnTotalDensity);
+                        if (prototype == null)
+                        {
+                            continue;
+                        }
+
+                        TreePrototypeSettings prototypeSettings = prototype.Settings;
                         float coverage = EvaluateCoverage(
                             prototypeSettings,
                             sortedLayers,
@@ -1415,6 +1581,64 @@ public partial class InfinitMeshTerrain
                     treeRenderCells.RemoveAt(i);
                 }
             }
+        }
+
+        private static TreeBiomeRenderData ResolveTreeBiomeRenderData(
+            Vector2 worldXZ,
+            IReadOnlyList<TreeBiomeRenderData> biomes,
+            BiomeSamplingSettings settings)
+        {
+            int count = biomes != null ? math.min(math.max(0, settings.Count), biomes.Count) : 0;
+            if (count <= 0)
+            {
+                return null;
+            }
+
+            float2 sampleWorldXZ = new float2(worldXZ.x, worldXZ.y);
+            float biomeDistance = EvaluateBiomeDistance(sampleWorldXZ, settings);
+            int biomeIndex = -1;
+            float bestScore = float.MinValue;
+            float nearestDistance = float.MaxValue;
+            int nearestIndex = -1;
+
+            for (int i = 0; i < count; i++)
+            {
+                TreeBiomeRenderData biome = biomes[i];
+                if (biome == null)
+                {
+                    continue;
+                }
+
+                float4 distanceRange = biome.DistanceRange;
+                float minDistance = math.max(0f, distanceRange.x);
+                float maxDistance = math.max(minDistance, distanceRange.y);
+                float selectionWeight = GetBiomeSelectionWeight(distanceRange);
+                if (selectionWeight <= 0f)
+                {
+                    continue;
+                }
+
+                float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
+                if (distanceToRange < nearestDistance)
+                {
+                    nearestDistance = distanceToRange;
+                    nearestIndex = i;
+                }
+
+                if (distanceToRange <= 0.0001f)
+                {
+                    int biomeSeedIndex = GetBiomeSeedIndex(distanceRange, i);
+                    float score = EvaluateBiomeSelectionScore(sampleWorldXZ, settings, biomeSeedIndex, selectionWeight);
+                    if (score > bestScore || (math.abs(score - bestScore) <= 0.0001f && i > biomeIndex))
+                    {
+                        biomeIndex = i;
+                        bestScore = score;
+                    }
+                }
+            }
+
+            int resolvedIndex = biomeIndex >= 0 ? biomeIndex : nearestIndex;
+            return resolvedIndex >= 0 ? biomes[resolvedIndex] : null;
         }
 
         private static TreeRenderPrototype PickPrototype(IReadOnlyList<TreeRenderPrototype> prototypes, float densityPick)

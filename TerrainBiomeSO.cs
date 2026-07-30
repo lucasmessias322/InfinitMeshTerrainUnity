@@ -5,6 +5,8 @@ using UnityEngine;
 [CreateAssetMenu(fileName = "TerrainBiome", menuName = "Procedural Terrain/Terrain Biome")]
 public sealed class TerrainBiomeSO : ScriptableObject
 {
+    private static readonly TreePrototypeSettings[] EmptyTreePrototypes = Array.Empty<TreePrototypeSettings>();
+
     public const float DefaultMaxDistanceFromCenter = 2048f;
     public static readonly Color DefaultGrassColor = new Color(0.32f, 0.42f, 0.07f, 1f);
 
@@ -19,6 +21,7 @@ public sealed class TerrainBiomeSO : ScriptableObject
     [SerializeField] private BiomeGrassSettings grass = BiomeGrassSettings.Default;
     [SerializeField, HideInInspector] private bool terrainLayerColorsInitialized;
     [SerializeField] private List<TerrainBiomeLayerColor> terrainLayerColors = new List<TerrainBiomeLayerColor>();
+    [SerializeField] private List<TreePrototypeSettings> treePrototypes = new List<TreePrototypeSettings>();
 
     public string BiomeName => string.IsNullOrWhiteSpace(biomeName) ? name : biomeName;
     public float MinDistanceFromCenter => Mathf.Max(0f, minDistanceFromCenter);
@@ -27,6 +30,28 @@ public sealed class TerrainBiomeSO : ScriptableObject
     public Color GrassColor => grassColor;
     public BiomeGrassSettings Grass => grass;
     public IReadOnlyList<TerrainBiomeLayerColor> TerrainLayerColors => terrainLayerColors;
+    public IReadOnlyList<TreePrototypeSettings> TreePrototypes => treePrototypes != null ? treePrototypes : EmptyTreePrototypes;
+    public bool HasTreePrototypes => GetTotalTreeDensityPerSquareMeter() > 0f;
+
+    public float GetTotalTreeDensityPerSquareMeter()
+    {
+        if (treePrototypes == null)
+        {
+            return 0f;
+        }
+
+        float total = 0f;
+        for (int i = 0; i < treePrototypes.Count; i++)
+        {
+            TreePrototypeSettings prototype = treePrototypes[i];
+            if (prototype != null && prototype.IsSpawnable)
+            {
+                total += prototype.DensityPerSquareMeter;
+            }
+        }
+
+        return total;
+    }
 
     public void ValidateValues()
     {
@@ -68,6 +93,16 @@ public sealed class TerrainBiomeSO : ScriptableObject
             TerrainBiomeLayerColor layerColor = terrainLayerColors[i];
             layerColor.Validate();
             terrainLayerColors[i] = layerColor;
+        }
+
+        if (treePrototypes == null)
+        {
+            treePrototypes = new List<TreePrototypeSettings>();
+        }
+
+        for (int i = 0; i < treePrototypes.Count; i++)
+        {
+            treePrototypes[i]?.ValidateValues();
         }
     }
 

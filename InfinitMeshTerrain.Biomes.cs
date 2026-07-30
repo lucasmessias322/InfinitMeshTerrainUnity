@@ -85,8 +85,11 @@ public partial class InfinitMeshTerrain
     private void OnBiomeChanged()
     {
         ValidateBiomeSettings();
+        treeRenderCacheDirty = true;
         ClearGrassRuntimeCells();
         ClearGrassFromRuntimeChunks();
+        ReleaseAllInteractiveTrees(true);
+        ClearTreesFromRuntimeChunks();
         RequestVisibleChunkRebuilds();
     }
 

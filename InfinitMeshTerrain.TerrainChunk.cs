@@ -65,7 +65,10 @@ public partial class InfinitMeshTerrain
             bool applyGrass,
             TreeSettingsSO treeSettings,
             IReadOnlyList<TreeRenderPrototype> treeRenderPrototypes,
-            float treeTotalDensity,
+            IReadOnlyList<TreeBiomeRenderData> treeBiomeData,
+            float globalTreeTotalDensity,
+            float maxTreeDensity,
+            bool useBiomeTreeSpawns,
             bool shouldBuildTrees,
             int terrainSeed,
             float chunkSize,
@@ -96,7 +99,22 @@ public partial class InfinitMeshTerrain
                 ApplyGrass(task);
             }
 
-            ApplyTrees(task, treeSettings, treeRenderPrototypes, treeTotalDensity, shouldBuildTrees, terrainSeed, chunkSize, enableWater, waterHeight, terrainLayers, slopeTextureSettings);
+            ApplyTrees(
+                task,
+                treeSettings,
+                treeRenderPrototypes,
+                treeBiomeData,
+                globalTreeTotalDensity,
+                maxTreeDensity,
+                useBiomeTreeSpawns,
+                shouldBuildTrees,
+                terrainSeed,
+                chunkSize,
+                enableWater,
+                waterHeight,
+                terrainLayers,
+                slopeTextureSettings,
+                biomeSettings);
         }
 
         public void SetMaterial(Material material)

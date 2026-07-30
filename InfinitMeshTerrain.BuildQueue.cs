@@ -242,6 +242,7 @@ public partial class InfinitMeshTerrain
     {
         TreeSettingsSO currentTreeSettings = treeSettings;
         IReadOnlyList<TreeRenderPrototype> currentTreeRenderPrototypes = GetTreeRenderPrototypes(currentTreeSettings);
+        IReadOnlyList<TreeBiomeRenderData> currentTreeBiomeRenderData = GetTreeBiomeRenderData(currentTreeSettings);
         chunk.Apply(
             task,
             chunkMaterial,
@@ -253,7 +254,10 @@ public partial class InfinitMeshTerrain
             !ShouldDeferGrassStreaming(),
             currentTreeSettings,
             currentTreeRenderPrototypes,
-            GetTreeTotalDensity(),
+            currentTreeBiomeRenderData,
+            GetGlobalTreeTotalDensity(),
+            GetTreeMaxDensity(),
+            HasBiomeSpecificTreeSpawns(currentTreeSettings),
             ShouldBuildTreesForChunk(coord),
             GetTerrainSeed(),
             chunkSize,
