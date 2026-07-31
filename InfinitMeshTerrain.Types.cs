@@ -151,6 +151,27 @@ public partial class InfinitMeshTerrain
         public float BlendRange;
     }
 
+    private struct TerrainSplatLayerData
+    {
+        public int Channel;
+        public float StartHeight;
+        public float BlendRange;
+    }
+
+    private struct TerrainBiomeLayerColorJobData
+    {
+        public float4 DistanceRange;
+        public int HasLayerColorMask;
+        public float4 LayerColor0;
+        public float4 LayerColor1;
+        public float4 LayerColor2;
+        public float4 LayerColor3;
+        public float4 LayerColor4;
+        public float4 LayerColor5;
+        public float4 LayerColor6;
+        public float4 LayerColor7;
+    }
+
     private struct GrassBiomeData
     {
         public float4 DistanceRange;

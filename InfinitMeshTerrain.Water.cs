@@ -31,8 +31,8 @@ public partial class InfinitMeshTerrain
         }
 
         Vector2Int viewerChunk = WorldToChunkCoord(viewer.position);
-        float x = (viewerChunk.x + 0.5f) * chunkSize;
-        float z = (viewerChunk.y + 0.5f) * chunkSize;
+        float x = (viewerChunk.x + 0.5f) * ChunkSize;
+        float z = (viewerChunk.y + 0.5f) * ChunkSize;
         float coverScale = Mathf.Max(1f, waterScale) * Mathf.Max(1, viewDistanceInChunks * 2 + 1);
 
         waterInstance.transform.position = new Vector3(x, waterHeight, z);

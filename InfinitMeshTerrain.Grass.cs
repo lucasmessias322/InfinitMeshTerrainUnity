@@ -781,7 +781,7 @@ public partial class InfinitMeshTerrain
 
     private int CalculateGrassSurfaceResolution(float grassCellSize)
     {
-        float terrainSampleSpacing = chunkSize / Mathf.Max(1, GetEffectiveSegmentCount());
+        float terrainSampleSpacing = ChunkSize / Mathf.Max(1, GetEffectiveSegmentCount());
         int segmentCount = Mathf.CeilToInt(grassCellSize / Mathf.Max(0.25f, terrainSampleSpacing));
         segmentCount = Mathf.Clamp(segmentCount, 1, MaxGrassSurfaceResolution - 1);
         return segmentCount + 1;

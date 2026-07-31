@@ -114,7 +114,7 @@ public partial class InfinitMeshTerrain
     private Vector2Int WorldToChunkCoord(Vector3 worldPosition)
     {
         return new Vector2Int(
-            Mathf.FloorToInt(worldPosition.x / chunkSize),
-            Mathf.FloorToInt(worldPosition.z / chunkSize));
+            Mathf.FloorToInt(worldPosition.x / ChunkSize),
+            Mathf.FloorToInt(worldPosition.z / ChunkSize));
     }
 }

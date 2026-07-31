@@ -1,6 +1,7 @@
 using System;
 using Unity.Collections;
 using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
 
 public partial class InfinitMeshTerrain
@@ -18,6 +19,10 @@ public partial class InfinitMeshTerrain
             int baseVertexCount,
             int heightLayerCount,
             int heightSplineSampleCount,
+            int splatLayerCount,
+            int biomeColorDataCount,
+            int activeBiomeLayerColorCount,
+            int activeBiomeLayerColorMask,
             int grassInstanceCapacity,
             int grassTerrainLayerCount)
         {
@@ -28,6 +33,13 @@ public partial class InfinitMeshTerrain
             SkirtIndexCount = skirtIndexCount;
             BaseVertexCount = baseVertexCount;
             Resolution = Mathf.RoundToInt(Mathf.Sqrt(baseVertexCount));
+            SplatMapPixelCount = baseVertexCount;
+            ActiveBiomeLayerColorCount = activeBiomeLayerColorCount > 0 && biomeColorDataCount > 0
+                ? activeBiomeLayerColorCount
+                : 0;
+            ActiveBiomeLayerColorMask = ActiveBiomeLayerColorCount > 0 ? activeBiomeLayerColorMask : 0;
+            BiomeLayerColorResolution = Resolution;
+            BiomeLayerColorPixelCount = ActiveBiomeLayerColorCount > 0 ? baseVertexCount : 0;
             Vertices = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Normals = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Uvs = new NativeArray<Vector2>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -40,6 +52,32 @@ public partial class InfinitMeshTerrain
             if (heightSplineSampleCount > 0)
             {
                 HeightSplineSamples = new NativeArray<float>(heightSplineSampleCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            }
+
+            if (splatLayerCount > 0)
+            {
+                SplatLayers = new NativeArray<TerrainSplatLayerData>(splatLayerCount, Allocator.Persistent);
+            }
+
+            if (SplatMapPixelCount > 0)
+            {
+                SplatMap0Pixels = new NativeArray<Color32>(SplatMapPixelCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+                SplatMap1Pixels = new NativeArray<Color32>(SplatMapPixelCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            }
+
+            if (ActiveBiomeLayerColorCount > 0)
+            {
+                TerrainLayerBaseColors = new NativeArray<float4>(MaxTerrainLayerCount, Allocator.Persistent);
+                TerrainBiomeLayerColorData = new NativeArray<TerrainBiomeLayerColorJobData>(
+                    Mathf.Max(0, biomeColorDataCount),
+                    Allocator.Persistent);
+                ActiveBiomeLayerColorChannels = new NativeArray<int>(
+                    ActiveBiomeLayerColorCount,
+                    Allocator.Persistent);
+                BiomeLayerColorPixels = new NativeArray<Color32>(
+                    BiomeLayerColorPixelCount * ActiveBiomeLayerColorCount,
+                    Allocator.Persistent,
+                    NativeArrayOptions.UninitializedMemory);
             }
 
             if (grassInstanceCapacity > 0)
@@ -58,6 +96,11 @@ public partial class InfinitMeshTerrain
         public int SkirtIndexCount { get; }
         public int BaseVertexCount { get; }
         public int Resolution { get; }
+        public int SplatMapPixelCount { get; }
+        public int ActiveBiomeLayerColorCount { get; }
+        public int ActiveBiomeLayerColorMask { get; }
+        public int BiomeLayerColorResolution { get; }
+        public int BiomeLayerColorPixelCount { get; }
         public JobHandle Handle;
         public NativeArray<Vector3> Vertices;
         public NativeArray<Vector3> Normals;
@@ -65,6 +108,13 @@ public partial class InfinitMeshTerrain
         public NativeArray<int> Indices;
         public NativeArray<TerrainHeightNoiseLayerData> HeightLayers;
         public NativeArray<float> HeightSplineSamples;
+        public NativeArray<TerrainSplatLayerData> SplatLayers;
+        public NativeArray<float4> TerrainLayerBaseColors;
+        public NativeArray<Color32> SplatMap0Pixels;
+        public NativeArray<Color32> SplatMap1Pixels;
+        public NativeArray<TerrainBiomeLayerColorJobData> TerrainBiomeLayerColorData;
+        public NativeArray<int> ActiveBiomeLayerColorChannels;
+        public NativeArray<Color32> BiomeLayerColorPixels;
         public NativeArray<GrassInstanceData> GrassInstances;
         public NativeArray<int> GrassInstanceCounter;
         public NativeArray<GrassChunkBounds> GrassBounds;
@@ -104,6 +154,41 @@ public partial class InfinitMeshTerrain
             if (HeightSplineSamples.IsCreated)
             {
                 HeightSplineSamples.Dispose();
+            }
+
+            if (SplatLayers.IsCreated)
+            {
+                SplatLayers.Dispose();
+            }
+
+            if (TerrainLayerBaseColors.IsCreated)
+            {
+                TerrainLayerBaseColors.Dispose();
+            }
+
+            if (SplatMap0Pixels.IsCreated)
+            {
+                SplatMap0Pixels.Dispose();
+            }
+
+            if (SplatMap1Pixels.IsCreated)
+            {
+                SplatMap1Pixels.Dispose();
+            }
+
+            if (TerrainBiomeLayerColorData.IsCreated)
+            {
+                TerrainBiomeLayerColorData.Dispose();
+            }
+
+            if (ActiveBiomeLayerColorChannels.IsCreated)
+            {
+                ActiveBiomeLayerColorChannels.Dispose();
+            }
+
+            if (BiomeLayerColorPixels.IsCreated)
+            {
+                BiomeLayerColorPixels.Dispose();
             }
 
             if (GrassInstances.IsCreated)

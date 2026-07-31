@@ -111,13 +111,13 @@ public partial class InfinitMeshTerrain
         if (pooledChunks.Count > 0)
         {
             TerrainChunk pooledChunk = pooledChunks.Pop();
-            pooledChunk.PrepareForUse(coord, transform, chunkSize, chunkMaterial);
+            pooledChunk.PrepareForUse(coord, transform, ChunkSize, chunkMaterial);
             return pooledChunk;
         }
 
         GameObject chunkObject = new GameObject($"Terrain Chunk {coord.x}, {coord.y}");
         chunkObject.transform.SetParent(transform, false);
-        chunkObject.transform.localPosition = new Vector3(coord.x * chunkSize, 0f, coord.y * chunkSize);
+        chunkObject.transform.localPosition = new Vector3(coord.x * ChunkSize, 0f, coord.y * ChunkSize);
 
         MeshFilter meshFilter = chunkObject.AddComponent<MeshFilter>();
         MeshRenderer meshRenderer = chunkObject.AddComponent<MeshRenderer>();

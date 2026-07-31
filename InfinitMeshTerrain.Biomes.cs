@@ -127,7 +127,7 @@ public partial class InfinitMeshTerrain
             NoiseLacunarity = biomeNoiseLacunarity,
             NoisePersistence = biomeNoisePersistence,
             NoiseOffset = new float2(biomeNoiseOffset.x, biomeNoiseOffset.y),
-            TerrainChunkSize = Mathf.Max(1f, chunkSize),
+            TerrainChunkSize = Mathf.Max(1f, ChunkSize),
             BiomeSampleSpacing = CalculateBiomeLayerColorMapSampleSpacing()
         };
     }
@@ -139,7 +139,7 @@ public partial class InfinitMeshTerrain
 
     private float CalculateBiomeLayerColorMapSampleSpacing()
     {
-        return Mathf.Max(0.0001f, chunkSize) / Mathf.Max(1, GetEffectiveSegmentCount());
+        return Mathf.Max(0.0001f, ChunkSize) / Mathf.Max(1, GetEffectiveSegmentCount());
     }
 
     private void GetGrassBiomeCapacityMultipliers(
@@ -256,6 +256,137 @@ public partial class InfinitMeshTerrain
         {
             destination[i] = biomeData[i];
         }
+    }
+
+    private static int CollectActiveTerrainBiomeLayerColorChannels(
+        TerrainBiomeLayerColorData[] biomeData,
+        BiomeSamplingSettings settings,
+        int[] activeChannels,
+        out int activeMask)
+    {
+        activeMask = 0;
+        if (activeChannels == null || biomeData == null || biomeData.Length == 0 || settings.Count <= 0)
+        {
+            return 0;
+        }
+
+        int activeCount = 0;
+        for (int channelIndex = 0; channelIndex < MaxTerrainLayerCount; channelIndex++)
+        {
+            if (!HasTerrainBiomeLayerColorOverride(biomeData, settings, channelIndex))
+            {
+                continue;
+            }
+
+            activeChannels[activeCount] = channelIndex;
+            activeMask |= 1 << channelIndex;
+            activeCount++;
+        }
+
+        return activeCount;
+    }
+
+    private static void CopyActiveTerrainBiomeLayerColorChannels(
+        NativeArray<int> destination,
+        int[] source,
+        int count)
+    {
+        if (!destination.IsCreated || source == null || count <= 0)
+        {
+            return;
+        }
+
+        int copyCount = math.min(destination.Length, math.min(source.Length, count));
+        for (int i = 0; i < copyCount; i++)
+        {
+            destination[i] = source[i];
+        }
+    }
+
+    private static void CopyTerrainBiomeLayerColorData(
+        NativeArray<TerrainBiomeLayerColorJobData> destination,
+        TerrainBiomeLayerColorData[] source)
+    {
+        if (!destination.IsCreated || destination.Length == 0 || source == null)
+        {
+            return;
+        }
+
+        int count = math.min(destination.Length, source.Length);
+        for (int i = 0; i < count; i++)
+        {
+            destination[i] = CreateTerrainBiomeLayerColorJobData(source[i]);
+        }
+    }
+
+    private static TerrainBiomeLayerColorJobData CreateTerrainBiomeLayerColorJobData(TerrainBiomeLayerColorData source)
+    {
+        TerrainBiomeLayerColorJobData data = new TerrainBiomeLayerColorJobData
+        {
+            DistanceRange = source != null ? source.DistanceRange : float4.zero
+        };
+
+        if (source?.HasLayerColor == null || source.LayerColors == null)
+        {
+            return data;
+        }
+
+        int count = math.min(source.HasLayerColor.Length, math.min(source.LayerColors.Length, MaxTerrainLayerCount));
+        for (int channelIndex = 0; channelIndex < count; channelIndex++)
+        {
+            if (!source.HasLayerColor[channelIndex])
+            {
+                continue;
+            }
+
+            data.HasLayerColorMask |= 1 << channelIndex;
+            SetTerrainBiomeLayerColor(ref data, channelIndex, ToFloat4(source.LayerColors[channelIndex]));
+        }
+
+        return data;
+    }
+
+    private static void SetTerrainBiomeLayerColor(
+        ref TerrainBiomeLayerColorJobData data,
+        int channelIndex,
+        float4 color)
+    {
+        switch (channelIndex)
+        {
+            case 1:
+                data.LayerColor1 = color;
+                break;
+            case 2:
+                data.LayerColor2 = color;
+                break;
+            case 3:
+                data.LayerColor3 = color;
+                break;
+            case 4:
+                data.LayerColor4 = color;
+                break;
+            case 5:
+                data.LayerColor5 = color;
+                break;
+            case 6:
+                data.LayerColor6 = color;
+                break;
+            case 7:
+                data.LayerColor7 = color;
+                break;
+            default:
+                data.LayerColor0 = color;
+                break;
+        }
+    }
+
+    private static float4 ToFloat4(Color color)
+    {
+        return new float4(
+            Mathf.Max(0f, color.r),
+            Mathf.Max(0f, color.g),
+            Mathf.Max(0f, color.b),
+            Mathf.Clamp01(color.a));
     }
 
     private static int CompareBiomeData(GrassBiomeData a, GrassBiomeData b)
@@ -1164,6 +1295,114 @@ public partial class InfinitMeshTerrain
         return blend;
     }
 
+    private static TerrainBiomeLayerColorBlend ResolveTerrainBiomeLayerColorBlend(
+        float2 worldXZ,
+        float biomeDistance,
+        NativeArray<TerrainBiomeLayerColorJobData> biomes,
+        BiomeSamplingSettings settings,
+        int count)
+    {
+        TerrainBiomeLayerColorBlend blend = new TerrainBiomeLayerColorBlend
+        {
+            PrimaryIndex = -1,
+            SecondaryIndex = -1,
+            SecondaryWeight = 0f
+        };
+
+        float bestScore = float.MinValue;
+        float secondScore = float.MinValue;
+        int secondIndex = -1;
+        float nearestDistance = float.MaxValue;
+        int nearestIndex = -1;
+        float nearestTransitionDistance = float.MaxValue;
+        int nearestTransitionIndex = -1;
+        float blendDistance = math.max(0f, settings.BlendDistance);
+        int biomeCount = math.min(math.max(0, count), biomes.Length);
+
+        for (int i = 0; i < biomeCount; i++)
+        {
+            TerrainBiomeLayerColorJobData biome = biomes[i];
+            float minDistance = math.max(0f, biome.DistanceRange.x);
+            float maxDistance = math.max(minDistance, biome.DistanceRange.y);
+            float selectionWeight = GetBiomeSelectionWeight(biome.DistanceRange);
+            if (selectionWeight <= 0f)
+            {
+                continue;
+            }
+
+            float distanceToRange = DistanceToRange(biomeDistance, minDistance, maxDistance);
+            if (distanceToRange < nearestDistance)
+            {
+                nearestDistance = distanceToRange;
+                nearestIndex = i;
+            }
+
+            if (distanceToRange <= 0.0001f)
+            {
+                int biomeSeedIndex = GetBiomeSeedIndex(biome.DistanceRange, i);
+                float score = EvaluateBiomeSelectionScore(worldXZ, settings, biomeSeedIndex, selectionWeight);
+                if (score > bestScore || (math.abs(score - bestScore) <= 0.0001f && i > blend.PrimaryIndex))
+                {
+                    secondIndex = blend.PrimaryIndex;
+                    secondScore = bestScore;
+                    blend.PrimaryIndex = i;
+                    bestScore = score;
+                }
+                else if (score > secondScore || (math.abs(score - secondScore) <= 0.0001f && i > secondIndex))
+                {
+                    secondIndex = i;
+                    secondScore = score;
+                }
+            }
+            else if (blendDistance > 0.0001f
+                && distanceToRange < nearestTransitionDistance
+                && distanceToRange <= blendDistance)
+            {
+                nearestTransitionDistance = distanceToRange;
+                nearestTransitionIndex = i;
+            }
+        }
+
+        if (blend.PrimaryIndex < 0)
+        {
+            blend.PrimaryIndex = nearestIndex;
+            return blend;
+        }
+
+        if (blendDistance <= 0.0001f)
+        {
+            return blend;
+        }
+
+        if (secondIndex >= 0)
+        {
+            float selectionBlendWidth = GetBiomeSelectionBlendWidth(settings);
+            if (selectionBlendWidth > 0.0001f)
+            {
+                float scoreGap = math.max(0f, bestScore - secondScore);
+                float scoreBlend = 0.5f - scoreGap / (selectionBlendWidth * 2f);
+                if (scoreBlend > blend.SecondaryWeight)
+                {
+                    blend.SecondaryIndex = secondIndex;
+                    blend.SecondaryWeight = math.saturate(scoreBlend);
+                }
+            }
+        }
+
+        if (nearestTransitionIndex >= 0 && nearestTransitionIndex != blend.PrimaryIndex)
+        {
+            float t = math.saturate(nearestTransitionDistance / blendDistance);
+            float rangeBlend = (1f - SmoothBiomeBlend01(t)) * 0.5f;
+            if (rangeBlend > blend.SecondaryWeight)
+            {
+                blend.SecondaryIndex = nearestTransitionIndex;
+                blend.SecondaryWeight = rangeBlend;
+            }
+        }
+
+        return blend;
+    }
+
     private static float GetBiomeSelectionBlendWidth(BiomeSamplingSettings settings)
     {
         if (settings.UseNoise == 0 || settings.BlendDistance <= 0.0001f)
@@ -1251,6 +1490,43 @@ public partial class InfinitMeshTerrain
         }
 
         return ToFloat3(biome.LayerColors[channelIndex]);
+    }
+
+    private static float3 ResolveTerrainBiomeLayerColor(
+        TerrainBiomeLayerColorJobData biome,
+        int channelIndex,
+        float3 fallbackColor)
+    {
+        int clampedChannelIndex = math.clamp(channelIndex, 0, MaxTerrainLayerCount - 1);
+        if ((biome.HasLayerColorMask & (1 << clampedChannelIndex)) == 0)
+        {
+            return fallbackColor;
+        }
+
+        return GetTerrainBiomeLayerColor(biome, clampedChannelIndex).xyz;
+    }
+
+    private static float4 GetTerrainBiomeLayerColor(TerrainBiomeLayerColorJobData biome, int channelIndex)
+    {
+        switch (channelIndex)
+        {
+            case 1:
+                return biome.LayerColor1;
+            case 2:
+                return biome.LayerColor2;
+            case 3:
+                return biome.LayerColor3;
+            case 4:
+                return biome.LayerColor4;
+            case 5:
+                return biome.LayerColor5;
+            case 6:
+                return biome.LayerColor6;
+            case 7:
+                return biome.LayerColor7;
+            default:
+                return biome.LayerColor0;
+        }
     }
 
     private static float3 ToFloat3(Color color)

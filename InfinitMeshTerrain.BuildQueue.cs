@@ -75,6 +75,18 @@ public partial class InfinitMeshTerrain
         int indexCount = surfaceIndexCount + skirtIndexCount;
         int heightLayerCount = GetTerrainHeightLayerCount();
         int heightSplineSampleCount = GetTerrainSplineSampleCount();
+        int splatLayerCount = GetTerrainSplatLayerCount();
+        TerrainBiomeLayerColorData[] biomeLayerColorData = CreateTerrainBiomeLayerColorDataArray();
+        BiomeSamplingSettings biomeSettings = CreateBiomeSamplingSettings();
+        int[] activeBiomeLayerColorChannels = new int[MaxTerrainLayerCount];
+        int activeBiomeLayerColorCount = CollectActiveTerrainBiomeLayerColorChannels(
+            biomeLayerColorData,
+            biomeSettings,
+            activeBiomeLayerColorChannels,
+            out int activeBiomeLayerColorMask);
+        int biomeColorDataCount = activeBiomeLayerColorCount > 0
+            ? Mathf.Min(Mathf.Max(0, biomeSettings.Count), biomeLayerColorData.Length)
+            : 0;
         int grassInstanceCapacity = 0;
         int grassTerrainLayerCount = 0;
 
@@ -89,12 +101,25 @@ public partial class InfinitMeshTerrain
             baseVertexCount,
             heightLayerCount,
             heightSplineSampleCount,
+            splatLayerCount,
+            biomeColorDataCount,
+            activeBiomeLayerColorCount,
+            activeBiomeLayerColorMask,
             grassInstanceCapacity,
             grassTerrainLayerCount);
         CopyTerrainHeightLayers(task.HeightLayers, task.HeightSplineSamples);
+        CopyTerrainSplatLayers(task.SplatLayers, task.TerrainLayerBaseColors);
+        CopyTerrainBiomeLayerColorData(task.TerrainBiomeLayerColorData, biomeLayerColorData);
+        CopyActiveTerrainBiomeLayerColorChannels(
+            task.ActiveBiomeLayerColorChannels,
+            activeBiomeLayerColorChannels,
+            activeBiomeLayerColorCount);
         CopyGrassTerrainLayers(task.GrassTerrainLayers);
 
         TerrainSettings settings = CreateTerrainSettings();
+        SlopeTextureSettings slopeTextureSettings = CreateSlopeTextureSettings();
+        float chunkSizeValue = ChunkSize;
+        float2 chunkOrigin = new float2(coord.x * chunkSizeValue, coord.y * chunkSizeValue);
 
         GenerateTerrainVerticesJob verticesJob = new GenerateTerrainVerticesJob
         {
@@ -105,8 +130,8 @@ public partial class InfinitMeshTerrain
             HeightLayers = task.HeightLayers,
             HeightSplineSamples = task.HeightSplineSamples,
             HeightLayerCount = task.HeightLayers.IsCreated ? task.HeightLayers.Length : 0,
-            ChunkOrigin = new float2(coord.x * chunkSize, coord.y * chunkSize),
-            ChunkSize = chunkSize,
+            ChunkOrigin = chunkOrigin,
+            ChunkSize = chunkSizeValue,
             SkirtDepth = skirtDepth,
             Resolution = resolution,
             BaseVertexCount = baseVertexCount,
@@ -128,6 +153,26 @@ public partial class InfinitMeshTerrain
 
         JobHandle verticesHandle = verticesJob.ScheduleParallel(vertexCount, 64, default);
         JobHandle indicesHandle = indicesJob.Schedule();
+        BuildTerrainSplatMapsJob splatMapsJob = new BuildTerrainSplatMapsJob
+        {
+            Vertices = task.Vertices,
+            Normals = task.Normals,
+            SplatMap0Pixels = task.SplatMap0Pixels,
+            SplatMap1Pixels = task.SplatMap1Pixels,
+            BiomeLayerColorPixels = task.BiomeLayerColorPixels,
+            SplatLayers = task.SplatLayers,
+            TerrainLayerBaseColors = task.TerrainLayerBaseColors,
+            TerrainBiomeLayerColorData = task.TerrainBiomeLayerColorData,
+            ActiveBiomeLayerColorChannels = task.ActiveBiomeLayerColorChannels,
+            SlopeTextureSettings = slopeTextureSettings,
+            BiomeSettings = biomeSettings,
+            ChunkOrigin = chunkOrigin,
+            TerrainLayerCount = task.SplatLayers.IsCreated ? task.SplatLayers.Length : 0,
+            BiomeDataCount = task.TerrainBiomeLayerColorData.IsCreated ? task.TerrainBiomeLayerColorData.Length : 0,
+            ActiveBiomeLayerColorCount = task.ActiveBiomeLayerColorCount,
+            BiomeLayerColorPixelCount = task.BiomeLayerColorPixelCount
+        };
+        JobHandle splatMapsHandle = splatMapsJob.ScheduleParallel(baseVertexCount, 64, verticesHandle);
         JobHandle grassHandle = default;
         if (task.HasGrassInstances)
         {
@@ -140,10 +185,10 @@ public partial class InfinitMeshTerrain
                 GrassInstanceCounter = task.GrassInstanceCounter,
                 GrassBounds = task.GrassBounds,
                 Settings = CreateGrassBuildSettings(),
-                SlopeTextureSettings = CreateSlopeTextureSettings(),
+                SlopeTextureSettings = slopeTextureSettings,
                 ChunkCoord = new int2(coord.x, coord.y),
-                ChunkOrigin = new float2(coord.x * chunkSize, coord.y * chunkSize),
-                ChunkSize = chunkSize,
+                ChunkOrigin = chunkOrigin,
+                ChunkSize = chunkSizeValue,
                 Resolution = resolution,
                 BaseVertexCount = baseVertexCount
             };
@@ -151,7 +196,9 @@ public partial class InfinitMeshTerrain
             grassHandle = grassJob.Schedule(verticesHandle);
         }
 
-        task.Handle = JobHandle.CombineDependencies(verticesHandle, indicesHandle, grassHandle);
+        JobHandle meshHandle = JobHandle.CombineDependencies(verticesHandle, indicesHandle);
+        JobHandle decorationHandle = JobHandle.CombineDependencies(splatMapsHandle, grassHandle);
+        task.Handle = JobHandle.CombineDependencies(meshHandle, decorationHandle);
         return task;
     }
 
@@ -249,7 +296,6 @@ public partial class InfinitMeshTerrain
             ShouldUseColliderForChunk(coord, task.Lod),
             terrainLayers,
             CreateSlopeTextureSettings(),
-            CreateTerrainBiomeLayerColorDataArray(),
             CreateBiomeSamplingSettings(),
             !ShouldDeferGrassStreaming(),
             currentTreeSettings,
@@ -260,7 +306,7 @@ public partial class InfinitMeshTerrain
             HasBiomeSpecificTreeSpawns(currentTreeSettings),
             ShouldBuildTreesForChunk(coord),
             GetTerrainSeed(),
-            chunkSize,
+            ChunkSize,
             enableWater,
             waterHeight);
     }

@@ -1,3 +1,6 @@
+using System;
+using Unity.Collections;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -78,5 +81,58 @@ public partial class InfinitMeshTerrain
             FullAngle = slopeRockFullAngle,
             Strength = slopeRockStrength
         };
+    }
+
+    private int GetTerrainSplatLayerCount()
+    {
+        return terrainLayers != null ? Mathf.Min(terrainLayers.Length, MaxTerrainLayerCount) : 0;
+    }
+
+    private void CopyTerrainSplatLayers(
+        NativeArray<TerrainSplatLayerData> destination,
+        NativeArray<float4> baseLayerColors)
+    {
+        if (baseLayerColors.IsCreated)
+        {
+            for (int channelIndex = 0; channelIndex < baseLayerColors.Length; channelIndex++)
+            {
+                baseLayerColors[channelIndex] = new float4(1f, 1f, 1f, 1f);
+            }
+        }
+
+        if (!destination.IsCreated || destination.Length == 0 || terrainLayers == null)
+        {
+            return;
+        }
+
+        TerrainSplatLayerData[] sortedLayers = new TerrainSplatLayerData[destination.Length];
+        for (int i = 0; i < sortedLayers.Length; i++)
+        {
+            TerrainHeightLayer layer = terrainLayers[i];
+            int channelIndex = Mathf.Clamp((int)layer.channel, 0, MaxTerrainLayerCount - 1);
+            Color layerColor = NormalizeLayerColor(layer.color);
+            sortedLayers[i] = new TerrainSplatLayerData
+            {
+                Channel = channelIndex,
+                StartHeight = layer.startHeight,
+                BlendRange = Mathf.Max(0.0001f, layer.blendRange)
+            };
+
+            if (baseLayerColors.IsCreated && channelIndex < baseLayerColors.Length)
+            {
+                baseLayerColors[channelIndex] = new float4(
+                    Mathf.Max(0f, layerColor.r),
+                    Mathf.Max(0f, layerColor.g),
+                    Mathf.Max(0f, layerColor.b),
+                    Mathf.Clamp01(layerColor.a));
+            }
+        }
+
+        Array.Sort(sortedLayers, (a, b) => a.StartHeight.CompareTo(b.StartHeight));
+
+        for (int i = 0; i < sortedLayers.Length; i++)
+        {
+            destination[i] = sortedLayers[i];
+        }
     }
 }

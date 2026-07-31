@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -61,7 +60,6 @@ public partial class InfinitMeshTerrain
             bool enableCollider,
             TerrainHeightLayer[] terrainLayers,
             SlopeTextureSettings slopeTextureSettings,
-            TerrainBiomeLayerColorData[] biomeData,
             BiomeSamplingSettings biomeSettings,
             bool applyGrass,
             TreeSettingsSO treeSettings,
@@ -86,7 +84,7 @@ public partial class InfinitMeshTerrain
             mesh.RecalculateBounds();
 
             SetMaterial(material);
-            RebuildSplatMap(task, terrainLayers, slopeTextureSettings, biomeData, biomeSettings, chunkSize);
+            ApplySplatMaps(task, terrainLayers);
             meshRenderer.shadowCastingMode = ShadowCastingMode.On;
             meshRenderer.receiveShadows = true;
             meshRenderer.renderingLayerMask = 1u;
@@ -226,16 +224,13 @@ public partial class InfinitMeshTerrain
             }
         }
 
-        private void RebuildSplatMap(
-            TerrainBuildTask task,
-            TerrainHeightLayer[] terrainLayers,
-            SlopeTextureSettings slopeTextureSettings,
-            TerrainBiomeLayerColorData[] biomeData,
-            BiomeSamplingSettings biomeSettings,
-            float chunkSize)
+        private void ApplySplatMaps(TerrainBuildTask task, TerrainHeightLayer[] terrainLayers)
         {
             int resolution = task.Resolution;
-            if (resolution <= 0 || task.BaseVertexCount <= 0)
+            if (resolution <= 0
+                || task.BaseVertexCount <= 0
+                || !task.SplatMap0Pixels.IsCreated
+                || !task.SplatMap1Pixels.IsCreated)
             {
                 return;
             }
@@ -259,104 +254,39 @@ public partial class InfinitMeshTerrain
                 };
             }
 
-            TerrainHeightLayer[] sortedLayers = CopySortedLayers(terrainLayers);
-            Color32[] pixels0 = new Color32[resolution * resolution];
-            Color32[] pixels1 = new Color32[pixels0.Length];
-            Color32[][] biomeLayerPixels = new Color32[MaxTerrainLayerCount][];
-            int[] activeBiomeLayerChannels = Array.Empty<int>();
-            int activeBiomeLayerChannelCount = 0;
-            Color[] baseLayerColors = null;
-            int biomeColorResolution = CalculateBiomeLayerColorMapResolution(resolution);
-            int biomeLayerPixelCount = biomeColorResolution * biomeColorResolution;
-            bool hasBiomeLayerData = biomeData != null && biomeData.Length > 0 && biomeSettings.Count > 0;
-            if (hasBiomeLayerData)
+            splatMaps[0].SetPixelData(task.SplatMap0Pixels, 0);
+            splatMaps[0].Apply(false, false);
+            splatMaps[1].SetPixelData(task.SplatMap1Pixels, 0);
+            splatMaps[1].Apply(false, false);
+
+            bool hasBiomeLayerColorMaps = task.ActiveBiomeLayerColorCount > 0
+                && task.BiomeLayerColorPixels.IsCreated
+                && task.ActiveBiomeLayerColorChannels.IsCreated
+                && task.BiomeLayerColorPixelCount > 0;
+            if (hasBiomeLayerColorMaps)
             {
-                activeBiomeLayerChannels = new int[MaxTerrainLayerCount];
                 for (int channelIndex = 0; channelIndex < MaxTerrainLayerCount; channelIndex++)
                 {
-                    if (HasTerrainBiomeLayerColorOverride(biomeData, biomeSettings, channelIndex))
-                    {
-                        biomeLayerPixels[channelIndex] = new Color32[biomeLayerPixelCount];
-                        activeBiomeLayerChannels[activeBiomeLayerChannelCount++] = channelIndex;
-                        EnsureBiomeLayerColorMap(channelIndex, biomeColorResolution);
-                    }
-                    else
+                    if ((task.ActiveBiomeLayerColorMask & (1 << channelIndex)) == 0)
                     {
                         DestroyBiomeLayerColorMap(channelIndex);
                     }
                 }
 
-                hasBiomeLayerData = activeBiomeLayerChannelCount > 0;
-                if (hasBiomeLayerData)
+                for (int activeIndex = 0; activeIndex < task.ActiveBiomeLayerColorCount; activeIndex++)
                 {
-                    baseLayerColors = CreateLayerBaseColors(sortedLayers);
+                    int channelIndex = task.ActiveBiomeLayerColorChannels[activeIndex];
+                    EnsureBiomeLayerColorMap(channelIndex, task.BiomeLayerColorResolution);
+                    biomeLayerColorMaps[channelIndex].SetPixelData(
+                        task.BiomeLayerColorPixels,
+                        0,
+                        activeIndex * task.BiomeLayerColorPixelCount);
+                    biomeLayerColorMaps[channelIndex].Apply(false, false);
                 }
             }
             else
             {
                 DestroyBiomeLayerColorMaps();
-            }
-
-            int biomeLayerDataCount = hasBiomeLayerData
-                ? math.min(math.max(0, biomeSettings.Count), biomeData.Length)
-                : 0;
-            float2 chunkOriginXZ = new float2(Coord.x * chunkSize, Coord.y * chunkSize);
-            for (int i = 0; i < pixels0.Length; i++)
-            {
-                float height = task.Vertices[i].y;
-                SplatWeights weights = EvaluateSplatWeights(height, sortedLayers);
-                weights = ApplySlopeTexture(weights, task.Normals[i], slopeTextureSettings);
-                pixels0[i] = ToColor32(weights.Map0);
-                pixels1[i] = ToColor32(weights.Map1);
-
-                if (!hasBiomeLayerData)
-                {
-                    continue;
-                }
-
-                Vector3 vertex = task.Vertices[i];
-                float2 worldXZ = chunkOriginXZ + new float2(vertex.x, vertex.z);
-                float biomeDistance = EvaluateBiomeDistance(worldXZ, biomeSettings);
-                TerrainBiomeLayerColorBlend biomeBlend = ResolveTerrainBiomeLayerColorBlend(
-                    worldXZ,
-                    biomeDistance,
-                    biomeData,
-                    biomeSettings,
-                    biomeLayerDataCount);
-
-                for (int activeIndex = 0; activeIndex < activeBiomeLayerChannelCount; activeIndex++)
-                {
-                    int channelIndex = activeBiomeLayerChannels[activeIndex];
-                    float3 layerColor = biomeBlend.PrimaryIndex >= 0
-                        ? ResolveTerrainBiomeLayerColor(biomeData[biomeBlend.PrimaryIndex], channelIndex, baseLayerColors[channelIndex])
-                        : ToFloat3(baseLayerColors[channelIndex]);
-                    if (biomeBlend.SecondaryIndex >= 0 && biomeBlend.SecondaryWeight > 0.0001f)
-                    {
-                        float3 secondaryColor = ResolveTerrainBiomeLayerColor(
-                            biomeData[biomeBlend.SecondaryIndex],
-                            channelIndex,
-                            baseLayerColors[channelIndex]);
-                        layerColor = math.lerp(layerColor, secondaryColor, biomeBlend.SecondaryWeight);
-                    }
-
-                    biomeLayerPixels[channelIndex][i] = ToColor32(layerColor);
-                }
-            }
-
-            splatMaps[0].SetPixels32(pixels0);
-            splatMaps[0].Apply(false, false);
-            splatMaps[1].SetPixels32(pixels1);
-            splatMaps[1].Apply(false, false);
-
-            for (int channelIndex = 0; channelIndex < biomeLayerPixels.Length; channelIndex++)
-            {
-                if (biomeLayerPixels[channelIndex] == null || biomeLayerColorMaps[channelIndex] == null)
-                {
-                    continue;
-                }
-
-                biomeLayerColorMaps[channelIndex].SetPixels32(biomeLayerPixels[channelIndex]);
-                biomeLayerColorMaps[channelIndex].Apply(false, false);
             }
 
             EnsurePropertyBlock();
@@ -367,7 +297,9 @@ public partial class InfinitMeshTerrain
 
             for (int channelIndex = 0; channelIndex < MaxTerrainLayerCount; channelIndex++)
             {
-                bool hasLayerColorMap = biomeLayerPixels[channelIndex] != null && biomeLayerColorMaps[channelIndex] != null;
+                bool hasLayerColorMap = hasBiomeLayerColorMaps
+                    && (task.ActiveBiomeLayerColorMask & (1 << channelIndex)) != 0
+                    && biomeLayerColorMaps[channelIndex] != null;
                 propertyBlock.SetTexture(
                     BiomeLayerColorMapPropertyIds[channelIndex],
                     hasLayerColorMap ? biomeLayerColorMaps[channelIndex] : Texture2D.whiteTexture);
@@ -376,7 +308,7 @@ public partial class InfinitMeshTerrain
                     hasLayerColorMap ? 1f : 0f);
             }
 
-            SetLayerProperties(sortedLayers);
+            SetLayerProperties(terrainLayers);
             ApplyPropertyBlock();
         }
 
@@ -522,29 +454,6 @@ public partial class InfinitMeshTerrain
             return sortedLayers;
         }
 
-        private static Color[] CreateLayerBaseColors(TerrainHeightLayer[] terrainLayers)
-        {
-            Color[] layerColors = new Color[MaxTerrainLayerCount];
-            for (int i = 0; i < layerColors.Length; i++)
-            {
-                layerColors[i] = Color.white;
-            }
-
-            if (terrainLayers == null)
-            {
-                return layerColors;
-            }
-
-            for (int i = 0; i < terrainLayers.Length; i++)
-            {
-                TerrainHeightLayer layer = terrainLayers[i];
-                int channelIndex = Mathf.Clamp((int)layer.channel, 0, MaxTerrainLayerCount - 1);
-                layerColors[channelIndex] = NormalizeLayerColor(layer.color);
-            }
-
-            return layerColors;
-        }
-
         private struct SplatWeights
         {
             public Vector4 Map0;
@@ -649,32 +558,9 @@ public partial class InfinitMeshTerrain
             }
         }
 
-        private static Color32 ToColor32(Vector4 weights)
-        {
-            return new Color32(
-                ToByte(weights.x),
-                ToByte(weights.y),
-                ToByte(weights.z),
-                ToByte(weights.w));
-        }
-
-        private static Color32 ToColor32(float3 color)
-        {
-            return new Color32(
-                ToByte(color.x),
-                ToByte(color.y),
-                ToByte(color.z),
-                255);
-        }
-
         private static float SumWeights(Vector4 weights)
         {
             return weights.x + weights.y + weights.z + weights.w;
-        }
-
-        private static byte ToByte(float value)
-        {
-            return (byte)Mathf.RoundToInt(Mathf.Clamp01(value) * 255f);
         }
     }
 }

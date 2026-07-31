@@ -95,7 +95,7 @@ public partial class InfinitMeshTerrain
         }
 
         return GetTreeRenderPrototypes(settings).Count > 0
-            && IsChunkInsideTreeDistance(coord, settings.TreeDistance + chunkSize * 0.75f);
+            && IsChunkInsideTreeDistance(coord, settings.TreeDistance + ChunkSize * 0.75f);
     }
 
     private IReadOnlyList<TreeRenderPrototype> GetTreeRenderPrototypes(TreeSettingsSO settings)
@@ -886,9 +886,9 @@ public partial class InfinitMeshTerrain
             return false;
         }
 
-        Vector2 chunkCenter = new Vector2((coord.x + 0.5f) * chunkSize, (coord.y + 0.5f) * chunkSize);
+        Vector2 chunkCenter = new Vector2((coord.x + 0.5f) * ChunkSize, (coord.y + 0.5f) * ChunkSize);
         Vector2 viewerPosition = new Vector2(viewer.position.x, viewer.position.z);
-        float chunkRadius = chunkSize * 0.707107f;
+        float chunkRadius = ChunkSize * 0.707107f;
         float allowedDistance = Mathf.Max(0f, distance) + chunkRadius;
         return (chunkCenter - viewerPosition).sqrMagnitude <= allowedDistance * allowedDistance;
     }

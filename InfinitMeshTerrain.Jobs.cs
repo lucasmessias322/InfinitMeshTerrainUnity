@@ -1,5 +1,6 @@
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
@@ -330,6 +331,202 @@ public partial class InfinitMeshTerrain
         private static float To01(float value)
         {
             return math.saturate(value * 0.5f + 0.5f);
+        }
+    }
+
+    [BurstCompile(FloatPrecision.Standard, FloatMode.Fast, CompileSynchronously = false)]
+    private struct BuildTerrainSplatMapsJob : IJobFor
+    {
+        [ReadOnly] public NativeArray<Vector3> Vertices;
+        [ReadOnly] public NativeArray<Vector3> Normals;
+        [WriteOnly] public NativeArray<Color32> SplatMap0Pixels;
+        [WriteOnly] public NativeArray<Color32> SplatMap1Pixels;
+        [WriteOnly, NativeDisableParallelForRestriction] public NativeArray<Color32> BiomeLayerColorPixels;
+        [ReadOnly] public NativeArray<TerrainSplatLayerData> SplatLayers;
+        [ReadOnly] public NativeArray<float4> TerrainLayerBaseColors;
+        [ReadOnly] public NativeArray<TerrainBiomeLayerColorJobData> TerrainBiomeLayerColorData;
+        [ReadOnly] public NativeArray<int> ActiveBiomeLayerColorChannels;
+
+        public SlopeTextureSettings SlopeTextureSettings;
+        public BiomeSamplingSettings BiomeSettings;
+        public float2 ChunkOrigin;
+        public int TerrainLayerCount;
+        public int BiomeDataCount;
+        public int ActiveBiomeLayerColorCount;
+        public int BiomeLayerColorPixelCount;
+
+        public void Execute(int index)
+        {
+            Vector3 vertex = Vertices[index];
+            SplatWeights weights = EvaluateSplatWeights(vertex.y);
+            weights = ApplySlopeTexture(weights, Normals[index]);
+            SplatMap0Pixels[index] = ToColor32(weights.Map0);
+            SplatMap1Pixels[index] = ToColor32(weights.Map1);
+
+            if (ActiveBiomeLayerColorCount <= 0 || BiomeDataCount <= 0 || BiomeLayerColorPixelCount <= 0)
+            {
+                return;
+            }
+
+            float2 worldXZ = ChunkOrigin + new float2(vertex.x, vertex.z);
+            float biomeDistance = EvaluateBiomeDistance(worldXZ, BiomeSettings);
+            TerrainBiomeLayerColorBlend biomeBlend = ResolveTerrainBiomeLayerColorBlend(
+                worldXZ,
+                biomeDistance,
+                TerrainBiomeLayerColorData,
+                BiomeSettings,
+                BiomeDataCount);
+
+            for (int activeIndex = 0; activeIndex < ActiveBiomeLayerColorCount; activeIndex++)
+            {
+                int channelIndex = ActiveBiomeLayerColorChannels[activeIndex];
+                float3 baseColor = TerrainLayerBaseColors[channelIndex].xyz;
+                float3 layerColor = biomeBlend.PrimaryIndex >= 0
+                    ? ResolveTerrainBiomeLayerColor(
+                        TerrainBiomeLayerColorData[biomeBlend.PrimaryIndex],
+                        channelIndex,
+                        baseColor)
+                    : baseColor;
+
+                if (biomeBlend.SecondaryIndex >= 0 && biomeBlend.SecondaryWeight > 0.0001f)
+                {
+                    float3 secondaryColor = ResolveTerrainBiomeLayerColor(
+                        TerrainBiomeLayerColorData[biomeBlend.SecondaryIndex],
+                        channelIndex,
+                        baseColor);
+                    layerColor = math.lerp(layerColor, secondaryColor, biomeBlend.SecondaryWeight);
+                }
+
+                BiomeLayerColorPixels[activeIndex * BiomeLayerColorPixelCount + index] = ToColor32(layerColor);
+            }
+        }
+
+        private SplatWeights EvaluateSplatWeights(float height)
+        {
+            SplatWeights weights = default;
+            int layerCount = TerrainLayerCount;
+
+            if (layerCount <= 0)
+            {
+                weights.Map0.x = 1f;
+                return weights;
+            }
+
+            layerCount = math.min(layerCount, SplatLayers.Length);
+            AddWeight(ref weights, SplatLayers[0].Channel, 1f);
+
+            for (int i = 1; i < layerCount; i++)
+            {
+                TerrainSplatLayerData layer = SplatLayers[i];
+                float blend = SmoothStep(layer.StartHeight, layer.StartHeight + math.max(0.0001f, layer.BlendRange), height);
+
+                weights.Map0 *= 1f - blend;
+                weights.Map1 *= 1f - blend;
+                AddWeight(ref weights, layer.Channel, blend);
+            }
+
+            return NormalizeWeights(weights);
+        }
+
+        private SplatWeights ApplySlopeTexture(SplatWeights weights, Vector3 normal)
+        {
+            if (!SlopeTextureSettings.Enabled)
+            {
+                return weights;
+            }
+
+            float normalY = math.clamp(normal.y, -1f, 1f);
+            float slopeAngle = math.acos(normalY) * 57.29578f;
+            float slopeBlend = SmoothStep(SlopeTextureSettings.StartAngle, SlopeTextureSettings.FullAngle, slopeAngle);
+            float rockAmount = math.saturate(slopeBlend * SlopeTextureSettings.Strength);
+
+            if (rockAmount <= 0.0001f)
+            {
+                return weights;
+            }
+
+            weights.Map0 *= 1f - rockAmount;
+            weights.Map1 *= 1f - rockAmount;
+            AddWeight(ref weights, (int)SlopeTextureSettings.Channel, rockAmount);
+            return NormalizeWeights(weights);
+        }
+
+        private static SplatWeights NormalizeWeights(SplatWeights weights)
+        {
+            float sum = math.csum(weights.Map0) + math.csum(weights.Map1);
+            if (sum > 0.0001f)
+            {
+                weights.Map0 /= sum;
+                weights.Map1 /= sum;
+            }
+
+            return weights;
+        }
+
+        private static void AddWeight(ref SplatWeights weights, int channel, float value)
+        {
+            switch (channel)
+            {
+                case 1:
+                    weights.Map0.y += value;
+                    break;
+                case 2:
+                    weights.Map0.z += value;
+                    break;
+                case 3:
+                    weights.Map0.w += value;
+                    break;
+                case 4:
+                    weights.Map1.x += value;
+                    break;
+                case 5:
+                    weights.Map1.y += value;
+                    break;
+                case 6:
+                    weights.Map1.z += value;
+                    break;
+                case 7:
+                    weights.Map1.w += value;
+                    break;
+                default:
+                    weights.Map0.x += value;
+                    break;
+            }
+        }
+
+        private static float SmoothStep(float edge0, float edge1, float value)
+        {
+            float t = math.saturate((value - edge0) / math.max(edge1 - edge0, 0.0001f));
+            return t * t * (3f - 2f * t);
+        }
+
+        private static Color32 ToColor32(float4 weights)
+        {
+            return new Color32(
+                ToByte(weights.x),
+                ToByte(weights.y),
+                ToByte(weights.z),
+                ToByte(weights.w));
+        }
+
+        private static Color32 ToColor32(float3 color)
+        {
+            return new Color32(
+                ToByte(color.x),
+                ToByte(color.y),
+                ToByte(color.z),
+                255);
+        }
+
+        private static byte ToByte(float value)
+        {
+            return (byte)(int)math.round(math.saturate(value) * 255f);
+        }
+
+        private struct SplatWeights
+        {
+            public float4 Map0;
+            public float4 Map1;
         }
     }
 

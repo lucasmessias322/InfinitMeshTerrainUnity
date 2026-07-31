@@ -4,6 +4,14 @@ using UnityEngine;
 [DisallowMultipleComponent]
 public partial class InfinitMeshTerrain : MonoBehaviour
 {
+    private enum TerrainChunkSize
+    {
+        [InspectorName("256")] Size256 = 256,
+        [InspectorName("512")] Size512 = 512,
+        [InspectorName("1024")] Size1024 = 1024,
+        [InspectorName("2048")] Size2048 = 2048
+    }
+
     private const int SplatMapCount = 2;
     private const int SplatMapChannelCount = 4;
     private const int MaxTerrainLayerCount = SplatMapCount * SplatMapChannelCount;
@@ -117,10 +125,12 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     [Header("Viewer")]
     [SerializeField] private Transform viewer;
     [SerializeField, Min(1)] private int viewDistanceInChunks = 8;
-    [SerializeField, Min(16f)] private float chunkSize = 1024f;
+
+   
+    [SerializeField] private TerrainChunkSize chunkSize = TerrainChunkSize.Size1024;
     [SerializeField, Min(5)] private int verticesPerLine = 33;
     [Tooltip("Multiplies only the source grid density used by LOD 0. Higher LODs keep skipping over this denser grid.")]
-    [SerializeField, Range(1, 4)] private int lod0VertexMultiplier = 2;
+    [SerializeField, Range(1, 8)] private int lod0VertexMultiplier = 2;
     [SerializeField, Min(1f)] private float viewerMoveThreshold = 32f;
 
     [Header("Rendering")]
@@ -189,6 +199,10 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private TerrainShapeSettingsSO subscribedTerrainShapeSettings;
     private GrassSettingsSO subscribedGrassSettings;
     private TreeSettingsSO subscribedTreeSettings;
+
+    private float ChunkSize => IsValidChunkSize(chunkSize)
+        ? (int)chunkSize
+        : (int)TerrainChunkSize.Size1024;
 
     private void Awake()
     {
@@ -272,14 +286,14 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private void OnValidate()
     {
         viewDistanceInChunks = Mathf.Max(1, viewDistanceInChunks);
-        chunkSize = Mathf.Max(16f, chunkSize);
+        ValidateChunkSize();
         verticesPerLine = Mathf.Max(5, verticesPerLine);
         if (verticesPerLine % 2 == 0)
         {
             verticesPerLine += 1;
         }
 
-        lod0VertexMultiplier = Mathf.Clamp(lod0VertexMultiplier, 1, 4);
+        lod0VertexMultiplier = Mathf.Clamp(lod0VertexMultiplier, 1, 8);
         maxConcurrentMeshTasks = Mathf.Max(1, maxConcurrentMeshTasks);
         maxChunkAppliesPerFrame = Mathf.Max(1, maxChunkAppliesPerFrame);
         cachedChunkPadding = Mathf.Max(0, cachedChunkPadding);
@@ -314,6 +328,22 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         {
             DisableAllChunkColliders();
         }
+    }
+
+    private void ValidateChunkSize()
+    {
+        if (!IsValidChunkSize(chunkSize))
+        {
+            chunkSize = TerrainChunkSize.Size1024;
+        }
+    }
+
+    private static bool IsValidChunkSize(TerrainChunkSize value)
+    {
+        return value == TerrainChunkSize.Size256
+            || value == TerrainChunkSize.Size512
+            || value == TerrainChunkSize.Size1024
+            || value == TerrainChunkSize.Size2048;
     }
 
     public void ForceRefresh()
