@@ -18,8 +18,12 @@ public partial class InfinitMeshTerrain
 
     private void StartQueuedBuilds()
     {
-        while (runningTasks.Count < maxConcurrentMeshTasks && buildQueue.Count > 0)
+        int checkedQueuedBuilds = buildQueue.Count;
+        int runningLod0Count = CountRunningLod0Tasks();
+
+        while (runningTasks.Count < maxConcurrentMeshTasks && buildQueue.Count > 0 && checkedQueuedBuilds > 0)
         {
+            checkedQueuedBuilds--;
             Vector2Int coord = buildQueue.Dequeue();
             queuedChunks.Remove(coord);
 
@@ -28,9 +32,34 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
+            if (chunk.DesiredLod == 0 && runningLod0Count >= maxConcurrentLod0MeshTasks)
+            {
+                buildQueue.Enqueue(coord);
+                queuedChunks.Add(coord);
+                continue;
+            }
+
             TerrainBuildTask task = ScheduleBuild(coord, chunk.DesiredLod, chunk.DesiredStitching);
             runningTasks.Add(coord, task);
+            if (chunk.DesiredLod == 0)
+            {
+                runningLod0Count++;
+            }
         }
+    }
+
+    private int CountRunningLod0Tasks()
+    {
+        int count = 0;
+        foreach (TerrainBuildTask task in runningTasks.Values)
+        {
+            if (task.Lod == 0)
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     private void PruneQueuedBuildsToVisibleChunks()
@@ -73,6 +102,15 @@ public partial class InfinitMeshTerrain
         int surfaceIndexCount = baseQuadCount * 6;
         int skirtIndexCount = skirtQuadCount * 6;
         int indexCount = surfaceIndexCount + skirtIndexCount;
+        TerrainIndexBuffer indexBuffer = GetTerrainIndexBuffer(
+            lod,
+            stitching,
+            resolution,
+            baseQuadCount,
+            baseVertexCount,
+            baseQuadCount + skirtQuadCount,
+            skirtSideMask,
+            indexCount);
         int heightLayerCount = GetTerrainHeightLayerCount();
         int heightSplineSampleCount = GetTerrainSplineSampleCount();
         int splatLayerCount = GetTerrainSplatLayerCount();
@@ -99,6 +137,8 @@ public partial class InfinitMeshTerrain
             surfaceIndexCount,
             skirtIndexCount,
             baseVertexCount,
+            indexBuffer.Indices,
+            false,
             heightLayerCount,
             heightSplineSampleCount,
             splatLayerCount,
@@ -137,22 +177,12 @@ public partial class InfinitMeshTerrain
             BaseVertexCount = baseVertexCount,
             SegmentCount = segmentCount,
             LodStep = step,
+            WriteNormals = 1,
             WriteUvs = 1,
             Stitching = stitching
         };
 
-        BuildTerrainIndicesJob indicesJob = new BuildTerrainIndicesJob
-        {
-            Indices = task.Indices,
-            Resolution = resolution,
-            BaseQuadCount = baseQuadCount,
-            BaseVertexCount = baseVertexCount,
-            TotalQuadCount = baseQuadCount + skirtQuadCount,
-            SkirtSideMask = skirtSideMask
-        };
-
         JobHandle verticesHandle = verticesJob.ScheduleParallel(vertexCount, 64, default);
-        JobHandle indicesHandle = indicesJob.Schedule();
         BuildTerrainSplatMapsJob splatMapsJob = new BuildTerrainSplatMapsJob
         {
             Vertices = task.Vertices,
@@ -196,7 +226,7 @@ public partial class InfinitMeshTerrain
             grassHandle = grassJob.Schedule(verticesHandle);
         }
 
-        JobHandle meshHandle = JobHandle.CombineDependencies(verticesHandle, indicesHandle);
+        JobHandle meshHandle = JobHandle.CombineDependencies(verticesHandle, indexBuffer.Handle);
         JobHandle decorationHandle = JobHandle.CombineDependencies(splatMapsHandle, grassHandle);
         task.Handle = JobHandle.CombineDependencies(meshHandle, decorationHandle);
         return task;
@@ -293,7 +323,7 @@ public partial class InfinitMeshTerrain
         chunk.Apply(
             task,
             chunkMaterial,
-            ShouldUseColliderForChunk(coord, task.Lod),
+            false,
             terrainLayers,
             CreateSlopeTextureSettings(),
             CreateBiomeSamplingSettings(),
@@ -309,6 +339,15 @@ public partial class InfinitMeshTerrain
             ChunkSize,
             enableWater,
             waterHeight);
+
+        if (ShouldUseColliderForChunk(coord))
+        {
+            QueueColliderUpdate(coord);
+        }
+        else
+        {
+            chunk.DisableCollider();
+        }
     }
 
     private void CompleteAndDisposeAllTasks()
@@ -322,8 +361,9 @@ public partial class InfinitMeshTerrain
         runningTasks.Clear();
         buildQueue.Clear();
         queuedChunks.Clear();
-        ClearQueuedColliderUpdates();
+        CompleteAndDisposeAllColliderTasks();
         CompleteAndDisposeAllGrassTasks();
+        DisposeTerrainIndexCache();
     }
 
     private void ClearRuntimeChunks()

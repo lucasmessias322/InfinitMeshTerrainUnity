@@ -17,6 +17,8 @@ public partial class InfinitMeshTerrain
             int surfaceIndexCount,
             int skirtIndexCount,
             int baseVertexCount,
+            NativeArray<int> indices,
+            bool ownsIndices,
             int heightLayerCount,
             int heightSplineSampleCount,
             int splatLayerCount,
@@ -32,6 +34,7 @@ public partial class InfinitMeshTerrain
             SurfaceIndexCount = surfaceIndexCount;
             SkirtIndexCount = skirtIndexCount;
             BaseVertexCount = baseVertexCount;
+            OwnsIndices = ownsIndices;
             Resolution = Mathf.RoundToInt(Mathf.Sqrt(baseVertexCount));
             SplatMapPixelCount = baseVertexCount;
             ActiveBiomeLayerColorCount = activeBiomeLayerColorCount > 0 && biomeColorDataCount > 0
@@ -43,7 +46,10 @@ public partial class InfinitMeshTerrain
             Vertices = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Normals = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Uvs = new NativeArray<Vector2>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            Indices = new NativeArray<int>(indexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            Indices = indices.IsCreated
+                ? indices
+                : new NativeArray<int>(indexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            OwnsIndices = OwnsIndices || !indices.IsCreated;
             if (heightLayerCount > 0)
             {
                 HeightLayers = new NativeArray<TerrainHeightNoiseLayerData>(heightLayerCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -95,6 +101,7 @@ public partial class InfinitMeshTerrain
         public int SurfaceIndexCount { get; }
         public int SkirtIndexCount { get; }
         public int BaseVertexCount { get; }
+        public bool OwnsIndices { get; private set; }
         public int Resolution { get; }
         public int SplatMapPixelCount { get; }
         public int ActiveBiomeLayerColorCount { get; }
@@ -141,7 +148,7 @@ public partial class InfinitMeshTerrain
                 Uvs.Dispose();
             }
 
-            if (Indices.IsCreated)
+            if (OwnsIndices && Indices.IsCreated)
             {
                 Indices.Dispose();
             }
@@ -212,6 +219,96 @@ public partial class InfinitMeshTerrain
             }
         }
 
+    }
+
+    private sealed class TerrainColliderBuildTask : IDisposable
+    {
+        public TerrainColliderBuildTask(
+            Vector2Int coord,
+            int lod,
+            EdgeStitching stitching,
+            int terrainVersion,
+            int vertexCount,
+            int indexCount,
+            int baseVertexCount,
+            NativeArray<int> indices,
+            bool ownsIndices,
+            int heightLayerCount,
+            int heightSplineSampleCount)
+        {
+            Coord = coord;
+            Lod = lod;
+            Stitching = stitching;
+            TerrainVersion = terrainVersion;
+            BaseVertexCount = baseVertexCount;
+            Resolution = Mathf.RoundToInt(Mathf.Sqrt(baseVertexCount));
+            OwnsIndices = ownsIndices;
+            Vertices = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            Indices = indices.IsCreated
+                ? indices
+                : new NativeArray<int>(indexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            OwnsIndices = OwnsIndices || !indices.IsCreated;
+            DummyNormals = new NativeArray<Vector3>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            DummyUvs = new NativeArray<Vector2>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+
+            if (heightLayerCount > 0)
+            {
+                HeightLayers = new NativeArray<TerrainHeightNoiseLayerData>(heightLayerCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            }
+
+            if (heightSplineSampleCount > 0)
+            {
+                HeightSplineSamples = new NativeArray<float>(heightSplineSampleCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            }
+        }
+
+        public Vector2Int Coord { get; }
+        public int Lod { get; }
+        public EdgeStitching Stitching { get; }
+        public int TerrainVersion { get; }
+        public int BaseVertexCount { get; }
+        public int Resolution { get; }
+        public bool OwnsIndices { get; private set; }
+        public JobHandle Handle;
+        public NativeArray<Vector3> Vertices;
+        public NativeArray<Vector3> DummyNormals;
+        public NativeArray<Vector2> DummyUvs;
+        public NativeArray<int> Indices;
+        public NativeArray<TerrainHeightNoiseLayerData> HeightLayers;
+        public NativeArray<float> HeightSplineSamples;
+
+        public void Dispose()
+        {
+            if (Vertices.IsCreated)
+            {
+                Vertices.Dispose();
+            }
+
+            if (OwnsIndices && Indices.IsCreated)
+            {
+                Indices.Dispose();
+            }
+
+            if (DummyNormals.IsCreated)
+            {
+                DummyNormals.Dispose();
+            }
+
+            if (DummyUvs.IsCreated)
+            {
+                DummyUvs.Dispose();
+            }
+
+            if (HeightLayers.IsCreated)
+            {
+                HeightLayers.Dispose();
+            }
+
+            if (HeightSplineSamples.IsCreated)
+            {
+                HeightSplineSamples.Dispose();
+            }
+        }
     }
 
     private sealed class GrassBuildTask : IDisposable

@@ -48,6 +48,11 @@ public partial class InfinitMeshTerrain
 
         float distance = Mathf.Sqrt(distanceSqr);
         float normalized = distance / viewDistanceInChunks;
+        if (useGeomipmappingLod)
+        {
+            int lod = Mathf.FloorToInt(normalized * (maxLod + 1));
+            return Mathf.Clamp(lod, 0, maxLod);
+        }
 
         if (normalized < 0.24f)
         {
@@ -71,9 +76,9 @@ public partial class InfinitMeshTerrain
     {
         int segmentCount = GetEffectiveSegmentCount();
         int clampedLod = Mathf.Clamp(lod, 0, maxLod);
-        int step = clampedLod == 0
-            ? 1
-            : Mathf.Max(1, lod0VertexMultiplier) << clampedLod;
+        int step = useGeomipmappingLod
+            ? 1 << clampedLod
+            : GetLegacyLodStep(clampedLod);
 
         while (step > 1 && segmentCount % step != 0)
         {
@@ -87,6 +92,13 @@ public partial class InfinitMeshTerrain
     {
         int baseSegmentCount = Mathf.Max(1, verticesPerLine - 1);
         return baseSegmentCount * Mathf.Max(1, lod0VertexMultiplier);
+    }
+
+    private int GetLegacyLodStep(int clampedLod)
+    {
+        return clampedLod == 0
+            ? 1
+            : Mathf.Max(1, lod0VertexMultiplier) << clampedLod;
     }
 
     private EdgeStitching CalculateDesiredStitching(Vector2Int coord, int lod)

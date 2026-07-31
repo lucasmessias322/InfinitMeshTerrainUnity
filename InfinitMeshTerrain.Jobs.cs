@@ -25,6 +25,7 @@ public partial class InfinitMeshTerrain
         public int BaseVertexCount;
         public int SegmentCount;
         public int LodStep;
+        public int WriteNormals;
         public int WriteUvs;
         public EdgeStitching Stitching;
 
@@ -38,7 +39,6 @@ public partial class InfinitMeshTerrain
             float2 world = ChunkOrigin + uv * ChunkSize;
             float height = SampleHeight(world);
             height = StitchEdgeHeight(height, grid, world);
-            float3 normal = EstimateNormal(world);
 
             if (index >= BaseVertexCount)
             {
@@ -46,8 +46,13 @@ public partial class InfinitMeshTerrain
             }
 
             Vertices[index] = new Vector3(uv.x * ChunkSize, height, uv.y * ChunkSize);
-            Normals[index] = new Vector3(normal.x, normal.y, normal.z);
-            if (WriteUvs != 0)
+            if (WriteNormals != 0 && Normals.IsCreated)
+            {
+                float3 normal = EstimateNormal(world);
+                Normals[index] = new Vector3(normal.x, normal.y, normal.z);
+            }
+
+            if (WriteUvs != 0 && Uvs.IsCreated)
             {
                 Uvs[index] = new Vector2(uv.x, uv.y);
             }

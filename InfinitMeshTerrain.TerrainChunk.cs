@@ -11,6 +11,7 @@ public partial class InfinitMeshTerrain
         private readonly MeshRenderer meshRenderer;
         private MeshCollider meshCollider;
         private readonly Mesh mesh;
+        private readonly Mesh colliderMesh;
         private MaterialPropertyBlock propertyBlock;
         private readonly Texture2D[] splatMaps = new Texture2D[SplatMapCount];
         private readonly Texture2D[] biomeLayerColorMaps = new Texture2D[MaxTerrainLayerCount];
@@ -30,7 +31,13 @@ public partial class InfinitMeshTerrain
                 name = $"Terrain Chunk Mesh {coord.x}, {coord.y}",
                 indexFormat = IndexFormat.UInt32
             };
+            colliderMesh = new Mesh
+            {
+                name = $"Terrain Collider Mesh {coord.x}, {coord.y}",
+                indexFormat = IndexFormat.UInt32
+            };
             mesh.MarkDynamic();
+            colliderMesh.MarkDynamic();
             meshFilter.sharedMesh = mesh;
             Coord = coord;
         }
@@ -40,7 +47,11 @@ public partial class InfinitMeshTerrain
         public int DesiredLod { get; set; }
         public EdgeStitching CurrentStitching { get; private set; }
         public EdgeStitching DesiredStitching { get; set; }
+        public int CurrentColliderLod { get; private set; } = -1;
+        public int CurrentColliderVersion { get; private set; } = -1;
+        public EdgeStitching CurrentColliderStitching { get; private set; }
         public bool HasMesh { get; private set; }
+        public bool HasColliderMesh { get; private set; }
         public bool HasActiveCollider => meshCollider != null && meshCollider.enabled && meshCollider.sharedMesh != null;
 
         public void PrepareForUse(Vector2Int coord, Transform parent, float chunkSize, Material material)
@@ -50,6 +61,7 @@ public partial class InfinitMeshTerrain
             gameObject.transform.SetParent(parent, false);
             gameObject.transform.localPosition = new Vector3(coord.x * chunkSize, 0f, coord.y * chunkSize);
             mesh.name = $"Terrain Chunk Mesh {coord.x}, {coord.y}";
+            colliderMesh.name = $"Terrain Collider Mesh {coord.x}, {coord.y}";
             SetMaterial(material);
             SetVisible(true);
         }
@@ -92,7 +104,7 @@ public partial class InfinitMeshTerrain
             CurrentLod = task.Lod;
             CurrentStitching = task.Stitching;
             HasMesh = true;
-            SetColliderEnabled(enableCollider, true);
+            SetColliderEnabled(enableCollider);
             if (task.HasGrassInstances && applyGrass)
             {
                 ApplyGrass(task);
@@ -137,9 +149,38 @@ public partial class InfinitMeshTerrain
             }
         }
 
-        public void SetColliderEnabled(bool enabled, bool forceMeshRefresh = false)
+        public void ApplyCollider(TerrainColliderBuildTask task)
         {
-            if (!enabled || !HasMesh)
+            if (meshCollider == null)
+            {
+                meshCollider = gameObject.AddComponent<MeshCollider>();
+                meshCollider.enabled = false;
+            }
+
+            if (meshCollider.sharedMesh == colliderMesh)
+            {
+                meshCollider.enabled = false;
+                meshCollider.sharedMesh = null;
+            }
+
+            colliderMesh.Clear();
+            colliderMesh.indexFormat = task.Vertices.Length > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
+            colliderMesh.SetVertices(task.Vertices);
+            colliderMesh.subMeshCount = 1;
+            colliderMesh.SetIndices(task.Indices, MeshTopology.Triangles, 0, true);
+            colliderMesh.RecalculateBounds();
+
+            CurrentColliderLod = task.Lod;
+            CurrentColliderVersion = task.TerrainVersion;
+            CurrentColliderStitching = task.Stitching;
+            HasColliderMesh = true;
+            RefreshColliderSharedMesh();
+            meshCollider.enabled = true;
+        }
+
+        public void SetColliderEnabled(bool enabled)
+        {
+            if (!enabled || !HasColliderMesh)
             {
                 DisableCollider();
                 return;
@@ -149,20 +190,31 @@ public partial class InfinitMeshTerrain
             {
                 meshCollider = gameObject.AddComponent<MeshCollider>();
                 meshCollider.enabled = false;
-                forceMeshRefresh = true;
             }
 
-            if (forceMeshRefresh || meshCollider.sharedMesh != mesh)
-            {
-                meshCollider.enabled = false;
-                meshCollider.sharedMesh = null;
-                meshCollider.sharedMesh = mesh;
-            }
+            RefreshColliderSharedMesh();
 
             if (!meshCollider.enabled)
             {
                 meshCollider.enabled = true;
             }
+        }
+
+        private void RefreshColliderSharedMesh()
+        {
+            if (meshCollider == null || !HasColliderMesh)
+            {
+                return;
+            }
+
+            if (meshCollider.sharedMesh == colliderMesh)
+            {
+                return;
+            }
+
+            meshCollider.enabled = false;
+            meshCollider.sharedMesh = null;
+            meshCollider.sharedMesh = colliderMesh;
         }
 
         public void DisableCollider()
@@ -177,15 +229,28 @@ public partial class InfinitMeshTerrain
                 meshCollider.enabled = false;
             }
 
-            if (meshCollider.sharedMesh != null)
+        }
+
+        private void ClearColliderMesh()
+        {
+            DisableCollider();
+
+            if (meshCollider != null && meshCollider.sharedMesh != null)
             {
                 meshCollider.sharedMesh = null;
             }
+
+            colliderMesh.Clear();
+            colliderMesh.indexFormat = IndexFormat.UInt32;
+            CurrentColliderLod = -1;
+            CurrentColliderVersion = -1;
+            CurrentColliderStitching = default;
+            HasColliderMesh = false;
         }
 
         public void ReleaseForReuse()
         {
-            DisableCollider();
+            ClearColliderMesh();
             ClearGrass();
             ClearTrees();
             DestroyBiomeLayerColorMaps();
@@ -215,11 +280,13 @@ public partial class InfinitMeshTerrain
             if (Application.isPlaying)
             {
                 Destroy(mesh);
+                Destroy(colliderMesh);
                 Destroy(gameObject);
             }
             else
             {
                 DestroyImmediate(mesh);
+                DestroyImmediate(colliderMesh);
                 DestroyImmediate(gameObject);
             }
         }

@@ -129,8 +129,10 @@ public partial class InfinitMeshTerrain : MonoBehaviour
    
     [SerializeField] private TerrainChunkSize chunkSize = TerrainChunkSize.Size1024;
     [SerializeField, Min(5)] private int verticesPerLine = 33;
-    [Tooltip("Multiplies only the source grid density used by LOD 0. Higher LODs keep skipping over this denser grid.")]
+    [Tooltip("Multiplies the chunk source grid density. With Geomipmapping LOD enabled, LODs sample this grid with power-of-two steps.")]
     [SerializeField, Range(1, 8)] private int lod0VertexMultiplier = 2;
+    [Tooltip("Uses geomipmapping-style power-of-two LOD steps: 1, 2, 4, 8... This avoids jumping from LOD0 straight to a very coarse mesh when lod0VertexMultiplier is high.")]
+    [SerializeField] private bool useGeomipmappingLod = true;
     [SerializeField, Min(1f)] private float viewerMoveThreshold = 32f;
 
     [Header("Rendering")]
@@ -159,11 +161,17 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     [SerializeField] private bool useCollider = true;
     [Tooltip("Square radius, in chunks, that keeps terrain collision alive around the viewer.")]
     [SerializeField, Min(0)] private int colliderDistanceInChunks = 2;
-    [SerializeField, Range(0, 5)] private int colliderMaxLod;
-    [SerializeField, Min(1)] private int maxColliderUpdatesPerFrame = 4;
+    [Tooltip("LOD used by the dedicated MeshCollider mesh. This is independent from the visual terrain LOD.")]
+    [SerializeField, Range(0, 5)] private int colliderMeshLod = 2;
+    [SerializeField, Min(1)] private int maxColliderUpdatesPerFrame = 1;
+    [SerializeField, Min(1)] private int maxConcurrentColliderMeshTasks = 1;
+    [Tooltip("How strongly collider builds are biased toward chunks in the viewer movement direction.")]
+    [SerializeField, Range(0f, 4f)] private float colliderMovementPriority = 2f;
 
     [Header("Streaming")]
     [SerializeField, Min(1)] private int maxConcurrentMeshTasks = 4;
+    [Tooltip("Limits expensive LOD0 builds separately so multiple dense chunks do not spike CPU at the same time.")]
+    [SerializeField, Min(1)] private int maxConcurrentLod0MeshTasks = 1;
     [Tooltip("Limits how many completed terrain chunks are uploaded to Unity objects in one frame. Lower values reduce spikes when moving fast.")]
     [SerializeField, Min(1)] private int maxChunkAppliesPerFrame = 1;
     [SerializeField, Min(0)] private int cachedChunkPadding = 2;
@@ -183,18 +191,24 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private readonly Dictionary<Vector2Int, TerrainBuildTask> runningTasks = new Dictionary<Vector2Int, TerrainBuildTask>();
     private readonly Queue<Vector2Int> buildQueue = new Queue<Vector2Int>();
     private readonly HashSet<Vector2Int> queuedChunks = new HashSet<Vector2Int>();
-    private readonly Queue<Vector2Int> colliderUpdateQueue = new Queue<Vector2Int>();
+    private readonly List<Vector2Int> colliderUpdateQueue = new List<Vector2Int>();
     private readonly HashSet<Vector2Int> queuedColliderChunks = new HashSet<Vector2Int>();
+    private readonly Dictionary<Vector2Int, TerrainColliderBuildTask> runningColliderTasks = new Dictionary<Vector2Int, TerrainColliderBuildTask>();
     private readonly HashSet<Vector2Int> visibleChunkCoords = new HashSet<Vector2Int>();
     private readonly List<Vector2Int> removalBuffer = new List<Vector2Int>();
     private readonly List<ChunkCandidate> candidateBuffer = new List<ChunkCandidate>();
     private readonly List<Vector2Int> completedTaskBuffer = new List<Vector2Int>();
+    private readonly List<Vector2Int> completedColliderTaskBuffer = new List<Vector2Int>();
     private readonly Stack<TerrainChunk> pooledChunks = new Stack<TerrainChunk>();
 
     private GameObject waterInstance;
     private Vector2Int lastViewerChunk;
     private Vector2Int completedTaskSortOrigin;
     private Vector3 lastViewerUpdatePosition;
+    private Vector3 lastViewerFramePosition;
+    private Vector2 colliderMovementDirection;
+    private bool hasLastViewerFramePosition;
+    private int terrainColliderVersion;
     private bool hasBuiltInitialSet;
     private TerrainShapeSettingsSO subscribedTerrainShapeSettings;
     private GrassSettingsSO subscribedGrassSettings;
@@ -248,6 +262,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
             return;
         }
 
+        UpdateColliderPriorityMotion(viewer.position);
         Vector2Int viewerChunk = WorldToChunkCoord(viewer.position);
         UpdateGrassStreamingMotion();
         float moveThresholdSqr = viewerMoveThreshold * viewerMoveThreshold;
@@ -281,6 +296,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         DestroyTreeRuntimeResources();
         DestroyWaterInstance();
         hasBuiltInitialSet = false;
+        hasLastViewerFramePosition = false;
+        colliderMovementDirection = Vector2.zero;
     }
 
     private void OnValidate()
@@ -295,13 +312,16 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
         lod0VertexMultiplier = Mathf.Clamp(lod0VertexMultiplier, 1, 8);
         maxConcurrentMeshTasks = Mathf.Max(1, maxConcurrentMeshTasks);
+        maxConcurrentLod0MeshTasks = Mathf.Clamp(maxConcurrentLod0MeshTasks, 1, maxConcurrentMeshTasks);
         maxChunkAppliesPerFrame = Mathf.Max(1, maxChunkAppliesPerFrame);
         cachedChunkPadding = Mathf.Max(0, cachedChunkPadding);
         maxPooledTerrainChunks = Mathf.Max(0, maxPooledTerrainChunks);
         maxLod = Mathf.Clamp(maxLod, 0, 5);
         colliderDistanceInChunks = Mathf.Clamp(colliderDistanceInChunks, 0, viewDistanceInChunks);
-        colliderMaxLod = Mathf.Clamp(colliderMaxLod, 0, maxLod);
+        colliderMeshLod = Mathf.Clamp(colliderMeshLod, 0, maxLod);
         maxColliderUpdatesPerFrame = Mathf.Max(1, maxColliderUpdatesPerFrame);
+        maxConcurrentColliderMeshTasks = Mathf.Max(1, maxConcurrentColliderMeshTasks);
+        colliderMovementPriority = Mathf.Clamp(colliderMovementPriority, 0f, 4f);
         slopeRockChannel = (SplatChannel)Mathf.Clamp((int)slopeRockChannel, 0, MaxTerrainLayerCount - 1);
         slopeRockStartAngle = Mathf.Clamp(slopeRockStartAngle, 0f, 89.9f);
         slopeRockFullAngle = Mathf.Clamp(slopeRockFullAngle, slopeRockStartAngle + 0.01f, 90f);
@@ -395,7 +415,12 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     {
         ClearGrassRuntimeCells();
         ClearGrassFromRuntimeChunks();
+        terrainColliderVersion++;
         RequestVisibleChunkRebuilds();
+        if (useCollider)
+        {
+            QueueVisibleColliderUpdates();
+        }
     }
 
     private void SyncGrassSettingsSubscription()

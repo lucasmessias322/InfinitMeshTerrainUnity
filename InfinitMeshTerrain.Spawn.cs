@@ -321,7 +321,8 @@ public partial class InfinitMeshTerrain
 
         if (!chunk.HasActiveCollider)
         {
-            chunk.SetColliderEnabled(true, true);
+            QueueColliderUpdate(coord);
+            chunk.SetColliderEnabled(true);
         }
 
         return chunk.HasActiveCollider;
