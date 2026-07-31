@@ -123,7 +123,7 @@ public partial class InfinitMeshTerrain
         MeshRenderer meshRenderer = chunkObject.AddComponent<MeshRenderer>();
         ConfigureTerrainRenderer(meshRenderer);
 
-        return new TerrainChunk(coord, chunkObject, meshFilter, meshRenderer, null);
+        return new TerrainChunk(this, coord, chunkObject, meshFilter, meshRenderer, null);
     }
 
     private void RecycleOrDisposeChunk(Vector2Int coord, TerrainChunk chunk)

@@ -7,6 +7,7 @@ public partial class InfinitMeshTerrain
 {
     private sealed partial class TerrainChunk : IDisposable
     {
+        private readonly InfinitMeshTerrain owner;
         private readonly GameObject gameObject;
         private readonly MeshRenderer meshRenderer;
         private MeshCollider meshCollider;
@@ -17,12 +18,14 @@ public partial class InfinitMeshTerrain
         private readonly Texture2D[] biomeLayerColorMaps = new Texture2D[MaxTerrainLayerCount];
 
         public TerrainChunk(
+            InfinitMeshTerrain owner,
             Vector2Int coord,
             GameObject gameObject,
             MeshFilter meshFilter,
             MeshRenderer meshRenderer,
             MeshCollider meshCollider)
         {
+            this.owner = owner;
             this.gameObject = gameObject;
             this.meshRenderer = meshRenderer;
             this.meshCollider = meshCollider;
