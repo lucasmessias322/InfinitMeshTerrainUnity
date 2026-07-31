@@ -110,12 +110,6 @@ public sealed class TreeSettingsSO : ScriptableObject
             return 0;
         }
 
-        float treeDistanceValue = TreeDistance;
-        if (distanceSqr > treeDistanceValue * treeDistanceValue)
-        {
-            return -1;
-        }
-
         IReadOnlyList<TreeMeshLodDistance> distances = InstancedMeshLodDistances;
         if (distances.Count == 0)
         {
@@ -235,6 +229,9 @@ public sealed class TreePrototypeSettings
     [SerializeField] private List<GameObject> prefabVariations = new List<GameObject>();
     [SerializeField, Min(0f), InspectorName("Density Per Hectare")] private float densityPerHectare = 4f;
 
+    [Header("Rendering")]
+    [SerializeField, Min(1f)] private float maxRenderDistance = TreeSettingsSO.DefaultTreeDistance;
+
     [Header("Interaction")]
     [SerializeField] private GameObject felledPrefab;
     [SerializeField] private GameObject stumpPrefab;
@@ -283,6 +280,9 @@ public sealed class TreePrototypeSettings
     public int MaxResourceDrops => Mathf.Max(MinResourceDrops, maxResourceDrops);
     public float ResourceDropScatterRadius => Mathf.Max(0f, resourceDropScatterRadius);
     public float DensityPerSquareMeter => Mathf.Max(0f, densityPerHectare) * 0.0001f;
+    public float MaxRenderDistance => maxRenderDistance > 0f
+        ? Mathf.Max(1f, maxRenderDistance)
+        : TreeSettingsSO.DefaultTreeDistance;
     public bool UseTerrainLayer => useTerrainLayer;
     public int ChannelIndex => Mathf.Clamp((int)channel, 0, 7);
     public float LayerThreshold => Mathf.Clamp01(layerThreshold);
@@ -339,6 +339,9 @@ public sealed class TreePrototypeSettings
     public void ValidateValues()
     {
         densityPerHectare = Mathf.Max(0f, densityPerHectare);
+        maxRenderDistance = maxRenderDistance <= 0f
+            ? TreeSettingsSO.DefaultTreeDistance
+            : Mathf.Max(1f, maxRenderDistance);
         maxHealth = Mathf.Max(0.01f, maxHealth);
         minResourceDrops = Mathf.Max(0, minResourceDrops);
         maxResourceDrops = Mathf.Max(minResourceDrops, maxResourceDrops);

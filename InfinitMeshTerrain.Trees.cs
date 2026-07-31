@@ -27,6 +27,7 @@ public partial class InfinitMeshTerrain
     private bool cachedHasBiomeSpecificTreeSpawns;
     private float cachedGlobalTreeTotalDensity;
     private float cachedTreeMaxDensity;
+    private float cachedTreeMaxRenderDistance;
     private Transform interactiveTreeRoot;
 
     private void ValidateTreeSettings()
@@ -52,6 +53,7 @@ public partial class InfinitMeshTerrain
 
         UpdateInteractiveTrees(settings);
 
+        float maxRenderDistance = GetTreeMaxRenderDistance(settings);
         int layer = gameObject.layer;
         ShadowCastingMode shadowCastingMode = settings.ShadowCastingMode;
         bool receiveShadows = settings.ReceiveShadows;
@@ -66,7 +68,7 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
-            if (!IsChunkInsideTreeDistance(coord, settings.TreeDistance))
+            if (!IsChunkInsideTreeDistance(coord, maxRenderDistance))
             {
                 if (settings.UnloadOutsideTreeDistance)
                 {
@@ -95,7 +97,7 @@ public partial class InfinitMeshTerrain
         }
 
         return GetTreeRenderPrototypes(settings).Count > 0
-            && IsChunkInsideTreeDistance(coord, settings.TreeDistance + ChunkSize * 0.75f);
+            && IsChunkInsideTreeDistance(coord, GetTreeMaxRenderDistance(settings) + ChunkSize * 0.75f);
     }
 
     private IReadOnlyList<TreeRenderPrototype> GetTreeRenderPrototypes(TreeSettingsSO settings)
@@ -117,6 +119,7 @@ public partial class InfinitMeshTerrain
         cachedHasBiomeSpecificTreeSpawns = false;
         cachedGlobalTreeTotalDensity = 0f;
         cachedTreeMaxDensity = 0f;
+        cachedTreeMaxRenderDistance = 0f;
 
         IReadOnlyList<TreePrototypeSettings> prototypes = settings.Prototypes;
         int nextPrototypeIndex = prototypes.Count;
@@ -129,6 +132,7 @@ public partial class InfinitMeshTerrain
 
             treeRenderPrototypes.Add(renderPrototype);
             cachedGlobalTreeTotalDensity += renderPrototype.DensityPerSquareMeter;
+            cachedTreeMaxRenderDistance = Mathf.Max(cachedTreeMaxRenderDistance, renderPrototype.MaxRenderDistance);
         }
 
         BuildTreeBiomeRenderData(ref nextPrototypeIndex);
@@ -218,6 +222,7 @@ public partial class InfinitMeshTerrain
                 treeRenderPrototypes.Add(renderPrototype);
                 biomePrototypes.Add(renderPrototype);
                 totalDensity += renderPrototype.DensityPerSquareMeter;
+                cachedTreeMaxRenderDistance = Mathf.Max(cachedTreeMaxRenderDistance, renderPrototype.MaxRenderDistance);
             }
 
             if (totalDensity > 0f)
@@ -374,6 +379,7 @@ public partial class InfinitMeshTerrain
                 || !visibleChunkCoords.Contains(activeTree.Coord)
                 || !chunks.TryGetValue(activeTree.Coord, out TerrainChunk chunk)
                 || !chunk.HasTreeInstance(pair.Key)
+                || !activeTree.Data.IsInsideRenderDistance(viewerPosition)
                 || (activeTree.Instance.transform.position - viewerPosition).sqrMagnitude > releaseDistanceSqr;
 
             if (shouldRelease)
@@ -417,7 +423,7 @@ public partial class InfinitMeshTerrain
                 }
 
                 float distanceSqr = (instance.Position - viewerPosition).sqrMagnitude;
-                if (distanceSqr <= interactiveDistanceSqr)
+                if (distanceSqr <= interactiveDistanceSqr && instance.IsInsideRenderDistance(viewerPosition))
                 {
                     treeInteractionCandidates.Add(new TreeInteractionCandidate(instance, distanceSqr));
                 }
@@ -879,6 +885,19 @@ public partial class InfinitMeshTerrain
         return cachedTreeMaxDensity;
     }
 
+    private float GetTreeMaxRenderDistance(TreeSettingsSO settings)
+    {
+        if (settings == null)
+        {
+            return 0f;
+        }
+
+        GetTreeRenderPrototypes(settings);
+        return cachedTreeMaxRenderDistance > 0f
+            ? cachedTreeMaxRenderDistance
+            : settings.TreeDistance;
+    }
+
     private bool IsChunkInsideTreeDistance(Vector2Int coord, float distance)
     {
         if (viewer == null)
@@ -912,6 +931,7 @@ public partial class InfinitMeshTerrain
         cachedHasBiomeSpecificTreeSpawns = false;
         cachedGlobalTreeTotalDensity = 0f;
         cachedTreeMaxDensity = 0f;
+        cachedTreeMaxRenderDistance = 0f;
         treeRenderCacheDirty = true;
     }
 
@@ -1012,6 +1032,7 @@ public partial class InfinitMeshTerrain
             }
         }
         public float DensityPerSquareMeter => Settings.DensityPerSquareMeter;
+        public float MaxRenderDistance => Settings.MaxRenderDistance;
 
         public bool HasRenderItems
         {
@@ -1166,6 +1187,16 @@ public partial class InfinitMeshTerrain
         public Quaternion Rotation { get; }
         public Vector3 Scale { get; }
         public Vector3 Normal { get; }
+
+        public bool IsInsideRenderDistance(Vector3 viewerPosition)
+        {
+            float maxRenderDistance = PrototypeSettings != null
+                ? PrototypeSettings.MaxRenderDistance
+                : TreeSettingsSO.DefaultTreeDistance;
+            float dx = Position.x - viewerPosition.x;
+            float dz = Position.z - viewerPosition.z;
+            return dx * dx + dz * dz <= maxRenderDistance * maxRenderDistance;
+        }
     }
 
     private readonly struct TreeInteractionCandidate
@@ -1512,6 +1543,9 @@ public partial class InfinitMeshTerrain
             float scale = Mathf.Lerp(settings.MinScale, settings.MaxScale, Hash01(instanceHash + 0x1f83d9abu));
             Matrix4x4 rootLocalToChunk = Matrix4x4.TRS(position + alignedNormal * settings.SurfaceOffset, rotation, Vector3.one * scale);
             Matrix4x4 rootLocalToWorld = chunkLocalToWorld * rootLocalToChunk;
+            Vector3 rootPosition = ExtractPosition(rootLocalToWorld);
+            Quaternion rootRotation = ExtractRotation(rootLocalToWorld);
+            Vector3 rootScale = ExtractScale(rootLocalToWorld);
 
             treeInstances.Add(new TreeInstanceData(
                 treeId,
@@ -1519,9 +1553,9 @@ public partial class InfinitMeshTerrain
                 prototype.PrototypeIndex,
                 variation.SourceVariationIndex,
                 settings,
-                ExtractPosition(rootLocalToWorld),
-                ExtractRotation(rootLocalToWorld),
-                ExtractScale(rootLocalToWorld),
+                rootPosition,
+                rootRotation,
+                rootScale,
                 chunkLocalToWorld.MultiplyVector(alignedNormal).normalized));
 
             TreeRenderCell renderCell = GetTreeRenderCell(position);
@@ -1537,7 +1571,7 @@ public partial class InfinitMeshTerrain
                 {
                     TreeRenderItem renderItem = renderItems[i];
                     Matrix4x4 matrix = rootLocalToWorld * renderItem.LocalToPrefab;
-                    renderCell.GetTreeRenderBatch(lodIndex, renderItem).Add(treeId, matrix);
+                    renderCell.GetTreeRenderBatch(lodIndex, renderItem, prototype.MaxRenderDistance).Add(treeId, matrix, rootPosition);
                 }
             }
         }
@@ -1888,20 +1922,20 @@ public partial class InfinitMeshTerrain
                 }
             }
 
-            public TreeRenderBatch GetTreeRenderBatch(int lodIndex, TreeRenderItem item)
+            public TreeRenderBatch GetTreeRenderBatch(int lodIndex, TreeRenderItem item, float maxRenderDistance)
             {
                 int clampedLodIndex = Mathf.Clamp(lodIndex, 0, lodBatches.Length - 1);
                 List<TreeRenderBatch> batches = lodBatches[clampedLodIndex];
                 for (int i = 0; i < batches.Count; i++)
                 {
                     TreeRenderBatch batch = batches[i];
-                    if (batch.Matches(item))
+                    if (batch.Matches(item, maxRenderDistance))
                     {
                         return batch;
                     }
                 }
 
-                TreeRenderBatch newBatch = new TreeRenderBatch(item.Mesh, item.Material, item.SubMeshIndex);
+                TreeRenderBatch newBatch = new TreeRenderBatch(item.Mesh, item.Material, item.SubMeshIndex, maxRenderDistance);
                 batches.Add(newBatch);
                 return newBatch;
             }
@@ -1939,7 +1973,8 @@ public partial class InfinitMeshTerrain
                 Dictionary<ulong, ActiveInteractiveTree> hiddenInteractiveTrees,
                 Matrix4x4[] scratchMatrices)
             {
-                int lodIndex = SelectLod(settings, viewerPosition, maxTreeLodIndex);
+                float closestDistanceSqr = GetClosestDistanceSqr(viewerPosition);
+                int lodIndex = SelectLod(settings, closestDistanceSqr, maxTreeLodIndex);
                 if (lodIndex < 0 || lodIndex >= lodBatches.Length)
                 {
                     return;
@@ -1951,9 +1986,13 @@ public partial class InfinitMeshTerrain
                     return;
                 }
 
+                float farthestDistanceSqr = GetFarthestDistanceSqr(viewerPosition);
                 for (int i = 0; i < batches.Count; i++)
                 {
                     batches[i].Draw(
+                        viewerPosition,
+                        closestDistanceSqr,
+                        farthestDistanceSqr,
                         layer,
                         shadowCastingMode,
                         receiveShadows,
@@ -1982,7 +2021,7 @@ public partial class InfinitMeshTerrain
                 }
             }
 
-            private int SelectLod(TreeSettingsSO settings, Vector3 viewerPosition, int maxTreeLodIndex)
+            private int SelectLod(TreeSettingsSO settings, float distanceSqr, int maxTreeLodIndex)
             {
                 if (settings == null
                     || !settings.ForceInstancedMeshLodByDistance
@@ -1991,7 +2030,6 @@ public partial class InfinitMeshTerrain
                     return 0;
                 }
 
-                float distanceSqr = GetClosestDistanceSqr(viewerPosition);
                 return settings.SelectInstancedMeshLodByDistanceSqr(distanceSqr, maxTreeLodIndex);
             }
 
@@ -2003,6 +2041,13 @@ public partial class InfinitMeshTerrain
                 float dz = viewerPosition.z - closestZ;
                 return dx * dx + dz * dz;
             }
+
+            private float GetFarthestDistanceSqr(Vector3 viewerPosition)
+            {
+                float dx = Mathf.Max(Mathf.Abs(viewerPosition.x - min.x), Mathf.Abs(viewerPosition.x - max.x));
+                float dz = Mathf.Max(Mathf.Abs(viewerPosition.z - min.y), Mathf.Abs(viewerPosition.z - max.y));
+                return dx * dx + dz * dz;
+            }
         }
 
         private sealed class TreeRenderBatch
@@ -2010,53 +2055,69 @@ public partial class InfinitMeshTerrain
             private readonly Mesh mesh;
             private readonly Material material;
             private readonly int subMeshIndex;
+            private readonly float maxRenderDistance;
+            private readonly float maxRenderDistanceSqr;
             private readonly List<Matrix4x4> matrices = new List<Matrix4x4>();
+            private readonly List<Vector3> positions = new List<Vector3>();
             private readonly List<ulong> ids = new List<ulong>();
             private readonly List<Matrix4x4[]> drawBatches = new List<Matrix4x4[]>();
+            private readonly List<Vector3[]> drawBatchPositions = new List<Vector3[]>();
             private readonly List<ulong[]> drawBatchIds = new List<ulong[]>();
 
-            public TreeRenderBatch(Mesh mesh, Material material, int subMeshIndex)
+            public TreeRenderBatch(Mesh mesh, Material material, int subMeshIndex, float maxRenderDistance)
             {
                 this.mesh = mesh;
                 this.material = material;
                 this.subMeshIndex = subMeshIndex;
+                this.maxRenderDistance = Mathf.Max(1f, maxRenderDistance);
+                maxRenderDistanceSqr = this.maxRenderDistance * this.maxRenderDistance;
             }
 
             public bool HasMatrices => drawBatches.Count > 0;
 
-            public bool Matches(TreeRenderItem item)
+            public bool Matches(TreeRenderItem item, float maxRenderDistance)
             {
                 return mesh == item.Mesh
                     && material == item.Material
-                    && subMeshIndex == item.SubMeshIndex;
+                    && subMeshIndex == item.SubMeshIndex
+                    && Mathf.Approximately(this.maxRenderDistance, Mathf.Max(1f, maxRenderDistance));
             }
 
-            public void Add(ulong treeId, Matrix4x4 matrix)
+            public void Add(ulong treeId, Matrix4x4 matrix, Vector3 position)
             {
                 ids.Add(treeId);
                 matrices.Add(matrix);
+                positions.Add(position);
             }
 
             public void FinalizeBatches()
             {
                 drawBatches.Clear();
+                drawBatchPositions.Clear();
                 drawBatchIds.Clear();
                 for (int start = 0; start < matrices.Count; start += TreeDrawBatchSize)
                 {
                     int count = Mathf.Min(TreeDrawBatchSize, matrices.Count - start);
                     Matrix4x4[] drawBatch = new Matrix4x4[count];
+                    Vector3[] positionBatch = new Vector3[count];
                     ulong[] idBatch = new ulong[count];
                     matrices.CopyTo(start, drawBatch, 0, count);
+                    positions.CopyTo(start, positionBatch, 0, count);
                     ids.CopyTo(start, idBatch, 0, count);
                     drawBatches.Add(drawBatch);
+                    drawBatchPositions.Add(positionBatch);
                     drawBatchIds.Add(idBatch);
                 }
 
                 ids.Clear();
                 matrices.Clear();
+                positions.Clear();
             }
 
             public void Draw(
+                Vector3 viewerPosition,
+                float closestCellDistanceSqr,
+                float farthestCellDistanceSqr,
                 int layer,
                 ShadowCastingMode shadowCastingMode,
                 bool receiveShadows,
@@ -2069,9 +2130,16 @@ public partial class InfinitMeshTerrain
                     return;
                 }
 
+                if (closestCellDistanceSqr > maxRenderDistanceSqr)
+                {
+                    return;
+                }
+
                 bool hasRemovedTrees = removedTreeIds != null && removedTreeIds.Count > 0;
                 bool hasHiddenInteractiveTrees = hiddenInteractiveTrees != null && hiddenInteractiveTrees.Count > 0;
-                bool needsFiltering = hasRemovedTrees || hasHiddenInteractiveTrees;
+                bool needsFiltering = hasRemovedTrees
+                    || hasHiddenInteractiveTrees
+                    || farthestCellDistanceSqr > maxRenderDistanceSqr;
 
                 for (int i = 0; i < drawBatches.Count; i++)
                 {
@@ -2085,7 +2153,9 @@ public partial class InfinitMeshTerrain
                     {
                         DrawFilteredBatch(
                             batch,
+                            drawBatchPositions[i],
                             drawBatchIds[i],
+                            viewerPosition,
                             layer,
                             shadowCastingMode,
                             receiveShadows,
@@ -2110,7 +2180,9 @@ public partial class InfinitMeshTerrain
 
             private void DrawFilteredBatch(
                 Matrix4x4[] batch,
+                Vector3[] batchPositions,
                 ulong[] batchIds,
+                Vector3 viewerPosition,
                 int layer,
                 ShadowCastingMode shadowCastingMode,
                 bool receiveShadows,
@@ -2118,7 +2190,10 @@ public partial class InfinitMeshTerrain
                 Dictionary<ulong, ActiveInteractiveTree> hiddenInteractiveTrees,
                 Matrix4x4[] scratchMatrices)
             {
-                if (batchIds == null || batchIds.Length != batch.Length)
+                if (batchIds == null
+                    || batchIds.Length != batch.Length
+                    || batchPositions == null
+                    || batchPositions.Length != batch.Length)
                 {
                     return;
                 }
@@ -2133,7 +2208,8 @@ public partial class InfinitMeshTerrain
                 {
                     ulong treeId = batchIds[i];
                     if ((removedTreeIds != null && removedTreeIds.Contains(treeId))
-                        || (hiddenInteractiveTrees != null && hiddenInteractiveTrees.ContainsKey(treeId)))
+                        || (hiddenInteractiveTrees != null && hiddenInteractiveTrees.ContainsKey(treeId))
+                        || !IsInsideRenderDistance(batchPositions[i], viewerPosition))
                     {
                         continue;
                     }
@@ -2159,11 +2235,20 @@ public partial class InfinitMeshTerrain
                     layer);
             }
 
+            private bool IsInsideRenderDistance(Vector3 position, Vector3 viewerPosition)
+            {
+                float dx = position.x - viewerPosition.x;
+                float dz = position.z - viewerPosition.z;
+                return dx * dx + dz * dz <= maxRenderDistanceSqr;
+            }
+
             public void Clear()
             {
                 ids.Clear();
                 matrices.Clear();
+                positions.Clear();
                 drawBatches.Clear();
+                drawBatchPositions.Clear();
                 drawBatchIds.Clear();
             }
         }
