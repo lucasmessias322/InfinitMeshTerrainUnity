@@ -104,6 +104,7 @@ public partial class InfinitMeshTerrain
         lastViewerChunk = viewerChunk;
         lastViewerUpdatePosition = viewer.position;
         hasBuiltInitialSet = true;
+        UpdateWater();
     }
 
     private TerrainChunk CreateChunk(Vector2Int coord)

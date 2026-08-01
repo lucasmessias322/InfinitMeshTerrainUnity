@@ -185,7 +185,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     [SerializeField] private bool enableWater = true;
     [SerializeField] private GameObject waterObject;
     [SerializeField] private float waterHeight = 150f;
-    [SerializeField] private float waterScale = 102.4f;
+    [SerializeField] private Vector3 waterScale = new Vector3(102.4f, 1f, 102.4f);
 
     private readonly Dictionary<Vector2Int, TerrainChunk> chunks = new Dictionary<Vector2Int, TerrainChunk>();
     private readonly Dictionary<Vector2Int, TerrainBuildTask> runningTasks = new Dictionary<Vector2Int, TerrainBuildTask>();
@@ -201,7 +201,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private readonly List<Vector2Int> completedColliderTaskBuffer = new List<Vector2Int>();
     private readonly Stack<TerrainChunk> pooledChunks = new Stack<TerrainChunk>();
 
-    private GameObject waterInstance;
+    private readonly Dictionary<Vector2Int, GameObject> waterInstances = new Dictionary<Vector2Int, GameObject>();
+    private readonly List<Vector2Int> waterRemovalBuffer = new List<Vector2Int>();
     private Vector2Int lastViewerChunk;
     private Vector2Int completedTaskSortOrigin;
     private Vector3 lastViewerUpdatePosition;
@@ -247,16 +248,15 @@ public partial class InfinitMeshTerrain : MonoBehaviour
 
     private void Start()
     {
-        EnsureWaterInstance();
         ForceRefresh();
+        UpdateWater();
     }
 
     private void Update()
     {
-        UpdateWater();
-
         if (viewer == null)
         {
+            UpdateWater();
             CompleteFinishedTasks();
             CompleteFinishedGrassTasks();
             return;
@@ -273,6 +273,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
             RefreshVisibleChunks(viewerChunk);
         }
 
+        UpdateWater();
         CompleteFinishedTasks();
         CompleteFinishedGrassTasks();
         StartQueuedBuilds();

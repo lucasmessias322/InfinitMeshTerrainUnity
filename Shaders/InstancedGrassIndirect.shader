@@ -12,6 +12,14 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
         _AdditionalLightsStrength ("Additional Lights Strength", Range(0, 32)) = 2
         _AdditionalLightsWrap ("Additional Lights Wrap", Range(0, 1)) = 0.55
         _AdditionalLightsAlbedoInfluence ("Additional Lights Albedo Influence", Range(0, 1)) = 0.55
+        _WindColor ("Wind Color", Color) = (0.64, 0.86, 0.28, 1)
+        _WindColorDirection ("Wind Wave Direction", Vector) = (1, 0.25, 0, 0)
+        _WindColorStrength ("Wind Color Strength", Range(0, 1)) = 0.22
+        _WindColorScale ("Wind Color Scale", Range(0.001, 0.2)) = 0.045
+        _WindColorSpeed ("Wind Color Speed", Range(0, 4)) = 1
+        _WindColorContrast ("Wind Color Contrast", Range(0.1, 8)) = 2.5
+        _WindColorTipBias ("Wind Color Tip Bias", Range(0, 1)) = 0.65
+        _WindWaveMovementStrength ("Wind Wave Movement Strength", Range(0, 3)) = 0.65
         _Cutoff ("Alpha Cutoff", Range(0, 1)) = 0.18
     }
 
@@ -68,6 +76,14 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 half _AdditionalLightsStrength;
                 half _AdditionalLightsWrap;
                 half _AdditionalLightsAlbedoInfluence;
+                half4 _WindColor;
+                half4 _WindColorDirection;
+                half _WindColorStrength;
+                half _WindColorScale;
+                half _WindColorSpeed;
+                half _WindColorContrast;
+                half _WindColorTipBias;
+                half _WindWaveMovementStrength;
                 half _Cutoff;
             CBUFFER_END
 
@@ -106,10 +122,86 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 half fade : TEXCOORD3;
                 half fogFactor : TEXCOORD4;
                 float3 positionWS : TEXCOORD5;
+                half windColorMask : TEXCOORD6;
 #if (defined(_ADDITIONAL_LIGHTS) || defined(_ADDITIONAL_LIGHTS_VERTEX)) && !USE_CLUSTER_LIGHT_LOOP
-                half3 vertexLighting : TEXCOORD6;
+                half3 vertexLighting : TEXCOORD7;
 #endif
             };
+
+            float GrassWindHash(float2 lattice)
+            {
+                return frac(sin(dot(lattice, float2(127.1, 311.7))) * 43758.5453123);
+            }
+
+            float2 GrassWindGradient(float2 lattice)
+            {
+                float hash = GrassWindHash(lattice);
+                float2 gradient = float2(hash - 0.5, frac(hash * 7.13) - 0.5);
+                return normalize(gradient + float2(0.0001, 0.0001));
+            }
+
+            float GrassWindPerlin(float2 position)
+            {
+                float2 lattice = floor(position);
+                float2 local = frac(position);
+                float2 fade = local * local * local * (local * (local * 6.0 - 15.0) + 10.0);
+
+                float corner00 = dot(GrassWindGradient(lattice + float2(0.0, 0.0)), local - float2(0.0, 0.0));
+                float corner10 = dot(GrassWindGradient(lattice + float2(1.0, 0.0)), local - float2(1.0, 0.0));
+                float corner01 = dot(GrassWindGradient(lattice + float2(0.0, 1.0)), local - float2(0.0, 1.0));
+                float corner11 = dot(GrassWindGradient(lattice + float2(1.0, 1.0)), local - float2(1.0, 1.0));
+
+                float lower = lerp(corner00, corner10, fade.x);
+                float upper = lerp(corner01, corner11, fade.x);
+                return lerp(lower, upper, fade.y) * 0.5 + 0.5;
+            }
+
+            float GrassWindFbm(float2 position)
+            {
+                float value = 0.0;
+                float amplitude = 0.5;
+                float amplitudeSum = 0.0;
+
+                [unroll]
+                for (int octave = 0; octave < 3; octave++)
+                {
+                    value += GrassWindPerlin(position) * amplitude;
+                    amplitudeSum += amplitude;
+                    position = position * 2.07 + float2(17.13, 9.21);
+                    amplitude *= 0.5;
+                }
+
+                return value / max(amplitudeSum, 0.0001);
+            }
+
+            float2 GetGrassWindWaveDirection()
+            {
+                float2 colorDirection = (float2)_WindColorDirection.xy;
+                return dot(colorDirection, colorDirection) > 0.000001
+                    ? normalize(colorDirection)
+                    : normalize(_Wind.xy + float2(0.0001, 0.0001));
+            }
+
+            half EvaluateGrassWindWaveMask(float2 positionXZ)
+            {
+                float scale = max((float)_WindColorScale, 0.0001);
+                float2 windPlanar = GetGrassWindWaveDirection();
+                float2 windTangent = float2(-windPlanar.y, windPlanar.x);
+                float scroll = _Time.y * max(_Wind.w, 0.0) * max((float)_WindColorSpeed, 0.0);
+                float2 advectedPosition = positionXZ - windPlanar * scroll;
+                float2 noisePosition = float2(
+                    dot(advectedPosition, windTangent) * 0.35,
+                    dot(advectedPosition, windPlanar)) * scale;
+                float noise = GrassWindFbm(noisePosition);
+                float contrast = max((float)_WindColorContrast, 0.1);
+                float mask = saturate((noise - 0.5) * contrast + 0.5);
+                return half(smoothstep(0.35, 0.85, mask));
+            }
+
+            half EvaluateGrassWindColorMask(half windWaveMask)
+            {
+                return half(windWaveMask * saturate(_WindColorStrength));
+            }
 
             float DitherNoise(float2 pixelPosition)
             {
@@ -207,7 +299,13 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 float2 windPlanar = normalize(_Wind.xy + float2(0.0001, 0.0001));
                 float phase = dot(origin.xz, float2(0.071, 0.047)) + _Time.y * _Wind.w + instanceData.normalYaw.w;
                 float gust = sin(phase) * 0.65 + sin(phase * 2.17) * 0.35;
-                float3 windOffset = float3(windPlanar.x, 0.0, windPlanar.y) * gust * _Wind.z * swayMask * swayMask;
+                half windWaveMask = EvaluateGrassWindWaveMask(origin.xz);
+                float waveGust = (float)windWaveMask * max((float)_WindWaveMovementStrength, 0.0);
+                float2 windWavePlanar = GetGrassWindWaveDirection();
+                float3 windOffset = (
+                    float3(windPlanar.x, 0.0, windPlanar.y) * gust +
+                    float3(windWavePlanar.x, 0.0, windWavePlanar.y) * waveGust)
+                    * _Wind.z * swayMask * swayMask;
 
                 float3 localOffset =
                     tangent * (input.positionOS.x * width) +
@@ -244,6 +342,7 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 output.fade = half(fade);
                 output.fogFactor = half(ComputeFogFactor(output.positionHCS.z));
                 output.positionWS = positionWS;
+                output.windColorMask = EvaluateGrassWindColorMask(windWaveMask);
 #if (defined(_ADDITIONAL_LIGHTS) || defined(_ADDITIONAL_LIGHTS_VERTEX)) && !USE_CLUSTER_LIGHT_LOOP
                 output.vertexLighting = EvaluateAdditionalVertexLights(positionWS, output.normalWS);
 #endif
@@ -282,6 +381,8 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 half3 biomeAlbedo = BiomeGrassColorToAlbedo(input.color);
                 half3 biomeTexturedAlbedo = biomeAlbedo * lerp(half3(1.0, 1.0, 1.0), baseMap.rgb, textured);
                 half3 albedo = lerp(styledAlbedo, biomeTexturedAlbedo, saturate(_UseBiomeGrassColor));
+                half windTipMask = lerp(half(1.0), saturate(input.uv.y), saturate(_WindColorTipBias));
+                albedo = lerp(albedo, _WindColor.rgb, input.windColorMask * windTipMask);
                 half3 additionalAlbedo = lerp(half3(1.0, 1.0, 1.0), albedo, saturate(_AdditionalLightsAlbedoInfluence));
                 half3 color = albedo * lighting + additionalAlbedo * additionalLighting;
                 color = MixFog(color, input.fogFactor);
