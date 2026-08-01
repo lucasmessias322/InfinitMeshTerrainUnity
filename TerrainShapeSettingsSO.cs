@@ -9,6 +9,8 @@ public sealed class TerrainShapeSettingsSO : ScriptableObject
     public const int MaxHeightLayerCount = 16;
     public const int SplineSampleCount = 128;
     public const float DefaultLayeredMaxHeight = 2000f;
+    public const float DefaultTerraceStepHeight = 12f;
+    public const float DefaultTerraceBlendRange = 0.28f;
 
     public static readonly Vector2 DefaultNoiseOffset = new Vector2(-50000f, 50000f);
 
@@ -33,6 +35,16 @@ public sealed class TerrainShapeSettingsSO : ScriptableObject
     [SerializeField, Range(0f, 1f)] private float mountainSplineInfluence = 1f;
     [SerializeField] private AnimationCurve mountainSpline = DefaultMountainSpline();
 
+    [Header("Terraces")]
+    [Tooltip("Quantizes the final terrain height into broad, Valheim-like plateaus.")]
+    [SerializeField] private bool useTerraces;
+    [Tooltip("Vertical distance, in world units, between each terrace plateau.")]
+    [SerializeField, Min(0.01f)] private float terraceStepHeight = DefaultTerraceStepHeight;
+    [Tooltip("Fraction of each step used by the short smooth ramp into the next plateau.")]
+    [SerializeField, Range(0f, 1f)] private float terraceBlendRange = DefaultTerraceBlendRange;
+    [Tooltip("Blends between the original height and the terraced height.")]
+    [SerializeField, Range(0f, 1f)] private float terraceStrength = 1f;
+
     [Header("Seed / Offset")]
     [SerializeField] private Vector2 noiseOffset = DefaultNoiseOffset;
     [SerializeField] private int terrainSeed = DefaultTerrainSeed;
@@ -54,6 +66,10 @@ public sealed class TerrainShapeSettingsSO : ScriptableObject
         ? 0
         : Mathf.Clamp(mountainSplineInputLayerIndex, 0, heightLayers.Count - 1);
     public float MountainSplineInfluence => Mathf.Clamp01(mountainSplineInfluence);
+    public bool UseTerraces => useTerraces && terraceStepHeight > 0.0001f && terraceStrength > 0f;
+    public float TerraceStepHeight => Mathf.Max(0.01f, terraceStepHeight);
+    public float TerraceBlendRange => Mathf.Clamp01(terraceBlendRange);
+    public float TerraceStrength => UseTerraces ? Mathf.Clamp01(terraceStrength) : 0f;
     public Vector2 NoiseOffset => noiseOffset;
     public int TerrainSeed => terrainSeed;
 
@@ -89,6 +105,9 @@ public sealed class TerrainShapeSettingsSO : ScriptableObject
             : 0;
         continentalSplineInfluence = Mathf.Clamp01(continentalSplineInfluence);
         mountainSplineInfluence = Mathf.Clamp01(mountainSplineInfluence);
+        terraceStepHeight = Mathf.Max(0.01f, terraceStepHeight);
+        terraceBlendRange = Mathf.Clamp01(terraceBlendRange);
+        terraceStrength = Mathf.Clamp01(terraceStrength);
         EnsureCurve(ref continentalSpline, DefaultContinentalSpline());
         EnsureCurve(ref mountainSpline, DefaultMountainSpline());
     }
@@ -97,6 +116,17 @@ public sealed class TerrainShapeSettingsSO : ScriptableObject
     private void ResetHeightLayersToMinecraftLikeStack()
     {
         heightLayers = CreateDefaultHeightLayers();
+        ValidateValues();
+        Changed?.Invoke();
+    }
+
+    [ContextMenu("Enable Valheim Like Terraces")]
+    private void EnableValheimLikeTerraces()
+    {
+        useTerraces = true;
+        terraceStepHeight = DefaultTerraceStepHeight;
+        terraceBlendRange = DefaultTerraceBlendRange;
+        terraceStrength = 1f;
         ValidateValues();
         Changed?.Invoke();
     }

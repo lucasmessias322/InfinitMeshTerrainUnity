@@ -18,8 +18,39 @@ public partial class InfinitMeshTerrain
             NoiseOffset = shapeSettings != null ? shapeSettings.NoiseOffset : TerrainShapeSettingsSO.DefaultNoiseOffset,
             TerrainSeed = GetTerrainSeed(),
             MinHeight = shapeSettings != null ? shapeSettings.MinHeight : 0f,
-            MaxHeight = shapeSettings != null ? shapeSettings.MaxHeight : TerrainShapeSettingsSO.DefaultLayeredMaxHeight
+            MaxHeight = shapeSettings != null ? shapeSettings.MaxHeight : TerrainShapeSettingsSO.DefaultLayeredMaxHeight,
+            UseTerraces = shapeSettings != null && shapeSettings.UseTerraces ? 1 : 0,
+            TerraceStepHeight = shapeSettings != null ? shapeSettings.TerraceStepHeight : TerrainShapeSettingsSO.DefaultTerraceStepHeight,
+            TerraceBlendRange = shapeSettings != null ? shapeSettings.TerraceBlendRange : TerrainShapeSettingsSO.DefaultTerraceBlendRange,
+            TerraceStrength = shapeSettings != null ? shapeSettings.TerraceStrength : 0f
         };
+    }
+
+    private static float ApplyTerrainTerraces(float height, TerrainSettings settings)
+    {
+        if (settings.UseTerraces == 0 || settings.TerraceStrength <= 0f)
+        {
+            return height;
+        }
+
+        float stepHeight = math.max(0.0001f, settings.TerraceStepHeight);
+        float relativeHeight = math.max(0f, height - settings.MinHeight);
+        float lowerHeight = settings.MinHeight + math.floor(relativeHeight / stepHeight) * stepHeight;
+        float upperHeight = math.min(settings.MaxHeight, lowerHeight + stepHeight);
+        float stepFraction = math.saturate((height - lowerHeight) / stepHeight);
+        float terracedHeight = lowerHeight;
+        float blendRange = math.saturate(settings.TerraceBlendRange);
+
+        if (blendRange > 0.0001f && upperHeight > lowerHeight)
+        {
+            float rampStart = 1f - blendRange;
+            float ramp = math.saturate((stepFraction - rampStart) / blendRange);
+            ramp = ramp * ramp * (3f - 2f * ramp);
+            terracedHeight = math.lerp(lowerHeight, upperHeight, ramp);
+        }
+
+        float strength = math.saturate(settings.TerraceStrength);
+        return math.clamp(math.lerp(height, terracedHeight, strength), settings.MinHeight, settings.MaxHeight);
     }
 
     private int GetTerrainHeightLayerCount()

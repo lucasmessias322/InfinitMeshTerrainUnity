@@ -543,7 +543,8 @@ public partial class InfinitMeshTerrain
                     height = ApplyLayerOperation(height, contribution, layer.Operation);
                 }
 
-                return math.clamp(height, settings.MinHeight, settings.MaxHeight);
+                height = math.clamp(height, settings.MinHeight, settings.MaxHeight);
+                return ApplyTerrainTerraces(height, settings);
             }
 
             return settings.MinHeight;

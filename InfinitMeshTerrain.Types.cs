@@ -114,6 +114,10 @@ public partial class InfinitMeshTerrain
         public int TerrainSeed;
         public float MinHeight;
         public float MaxHeight;
+        public int UseTerraces;
+        public float TerraceStepHeight;
+        public float TerraceBlendRange;
+        public float TerraceStrength;
     }
 
     private struct TerrainHeightNoiseLayerData
