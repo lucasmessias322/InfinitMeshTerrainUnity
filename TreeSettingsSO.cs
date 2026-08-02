@@ -264,7 +264,7 @@ public sealed class TreePrototypeSettings
     [SerializeField, Range(0f, 90f)] private float minSlopeAngle;
     [SerializeField, Range(0f, 90f)] private float maxSlopeAngle = 32f;
     [SerializeField, Min(0.01f)] private float slopeFadeRange = 6f;
-    [SerializeField, Min(0f)] private float surfaceOffset;
+    [SerializeField] private float surfaceOffset;
 
     [Header("Transform")]
     [SerializeField] private bool randomYaw = true;
@@ -306,7 +306,7 @@ public sealed class TreePrototypeSettings
     public float MinSlopeAngle => Mathf.Clamp(minSlopeAngle, 0f, 90f);
     public float MaxSlopeAngle => Mathf.Clamp(maxSlopeAngle, MinSlopeAngle, 90f);
     public float SlopeFadeRange => Mathf.Max(0.01f, slopeFadeRange);
-    public float SurfaceOffset => Mathf.Max(0f, surfaceOffset);
+    public float SurfaceOffset => surfaceOffset;
     public bool RandomYaw => randomYaw;
     public bool AlignToNormal => alignToNormal;
     public float NormalAlignment => Mathf.Clamp01(normalAlignment);
@@ -366,7 +366,6 @@ public sealed class TreePrototypeSettings
         minSlopeAngle = Mathf.Clamp(minSlopeAngle, 0f, 90f);
         maxSlopeAngle = Mathf.Clamp(maxSlopeAngle, minSlopeAngle, 90f);
         slopeFadeRange = Mathf.Max(0.01f, slopeFadeRange);
-        surfaceOffset = Mathf.Max(0f, surfaceOffset);
         normalAlignment = Mathf.Clamp01(normalAlignment);
         minScale = Mathf.Max(0.01f, minScale);
         maxScale = Mathf.Max(minScale, maxScale);

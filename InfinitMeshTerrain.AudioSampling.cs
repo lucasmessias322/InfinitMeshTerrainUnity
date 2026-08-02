@@ -4,6 +4,7 @@ using UnityEngine;
 public partial class InfinitMeshTerrain
 {
     public float WaterHeight => waterHeight;
+    public Vector3 WaterScale => waterScale;
     public bool IsWaterEnabled => enableWater && waterObject != null;
 
     public TerrainBiomeSO SampleTerrainBiome(Vector3 worldPosition)
