@@ -7,12 +7,21 @@ using UnityEngine;
 
 public partial class InfinitMeshTerrain
 {
-    [BurstCompile(FloatPrecision.Standard, FloatMode.Fast, CompileSynchronously = false)]
-    private struct GenerateTerrainVerticesJob : IJobFor
+    private static int GetHeightMapResolution(int resolution)
     {
-        [WriteOnly] public NativeArray<Vector3> Vertices;
-        [WriteOnly] public NativeArray<Vector3> Normals;
-        [WriteOnly] public NativeArray<Vector2> Uvs;
+        return Mathf.Max(1, resolution) + HeightMapBorder * 2;
+    }
+
+    private static int GetHeightMapVertexCount(int resolution)
+    {
+        int heightMapResolution = GetHeightMapResolution(resolution);
+        return heightMapResolution * heightMapResolution;
+    }
+
+    [BurstCompile(FloatPrecision.Standard, FloatMode.Fast, CompileSynchronously = false)]
+    private struct GenerateTerrainHeightMapJob : IJobFor
+    {
+        [WriteOnly] public NativeArray<float> Heights;
         [ReadOnly] public NativeArray<TerrainHeightNoiseLayerData> HeightLayers;
         [ReadOnly] public NativeArray<float> HeightSplineSamples;
 
@@ -20,66 +29,36 @@ public partial class InfinitMeshTerrain
         public int HeightLayerCount;
         public float2 ChunkOrigin;
         public float ChunkSize;
-        public float SkirtDepth;
         public int Resolution;
-        public int BaseVertexCount;
+        public int HeightMapResolution;
         public int SegmentCount;
         public int LodStep;
-        public int WriteNormals;
-        public int WriteUvs;
         public EdgeStitching Stitching;
 
         public void Execute(int index)
         {
-            int2 grid = ResolveGrid(index);
+            int2 mapGrid = new int2(index % HeightMapResolution, index / HeightMapResolution);
+            int2 grid = mapGrid - HeightMapBorder;
             float2 uv = Resolution > 1
                 ? new float2(grid.x, grid.y) / (Resolution - 1)
                 : float2.zero;
 
             float2 world = ChunkOrigin + uv * ChunkSize;
             float height = SampleHeight(world);
-            height = StitchEdgeHeight(height, grid, world);
-
-            if (index >= BaseVertexCount)
+            if (IsInteriorGrid(grid))
             {
-                height -= SkirtDepth;
+                height = StitchEdgeHeight(height, grid, world);
             }
 
-            Vertices[index] = new Vector3(uv.x * ChunkSize, height, uv.y * ChunkSize);
-            if (WriteNormals != 0 && Normals.IsCreated)
-            {
-                float3 normal = EstimateNormal(world);
-                Normals[index] = new Vector3(normal.x, normal.y, normal.z);
-            }
-
-            if (WriteUvs != 0 && Uvs.IsCreated)
-            {
-                Uvs[index] = new Vector2(uv.x, uv.y);
-            }
+            Heights[index] = height;
         }
 
-        private int2 ResolveGrid(int index)
+        private bool IsInteriorGrid(int2 grid)
         {
-            if (index < BaseVertexCount)
-            {
-                return new int2(index % Resolution, index / Resolution);
-            }
-
-            int skirtIndex = index - BaseVertexCount;
-            int side = skirtIndex / Resolution;
-            int sideIndex = skirtIndex - side * Resolution;
-
-            switch (side)
-            {
-                case 0:
-                    return new int2(sideIndex, Resolution - 1);
-                case 1:
-                    return new int2(Resolution - 1, sideIndex);
-                case 2:
-                    return new int2(Resolution - 1 - sideIndex, 0);
-                default:
-                    return new int2(0, Resolution - 1 - sideIndex);
-            }
+            return grid.x >= 0
+                && grid.x < Resolution
+                && grid.y >= 0
+                && grid.y < Resolution;
         }
 
         private float StitchEdgeHeight(float height, int2 grid, float2 world)
@@ -324,19 +303,117 @@ public partial class InfinitMeshTerrain
             return height + contribution;
         }
 
-        private float3 EstimateNormal(float2 world)
-        {
-            float sampleDistance = math.max(1f, ChunkSize / math.max(Resolution - 1, 1));
-            float left = SampleHeight(world - new float2(sampleDistance, 0f));
-            float right = SampleHeight(world + new float2(sampleDistance, 0f));
-            float back = SampleHeight(world - new float2(0f, sampleDistance));
-            float forward = SampleHeight(world + new float2(0f, sampleDistance));
-            return math.normalize(new float3(left - right, sampleDistance * 2f, back - forward));
-        }
-
         private static float To01(float value)
         {
             return math.saturate(value * 0.5f + 0.5f);
+        }
+    }
+
+    [BurstCompile(FloatPrecision.Standard, FloatMode.Fast, CompileSynchronously = false)]
+    private struct GenerateTerrainVerticesJob : IJobFor
+    {
+        [ReadOnly] public NativeArray<float> Heights;
+        [WriteOnly] public NativeArray<Vector3> Vertices;
+        [WriteOnly] public NativeArray<Vector3> Normals;
+        [WriteOnly] public NativeArray<Vector2> Uvs;
+
+        public float ChunkSize;
+        public float SkirtDepth;
+        public int Resolution;
+        public int HeightMapResolution;
+        public int BaseVertexCount;
+        public int WriteNormals;
+        public int WriteUvs;
+
+        public void Execute(int index)
+        {
+            int2 grid = ResolveGrid(index);
+            float2 uv = Resolution > 1
+                ? new float2(grid.x, grid.y) / (Resolution - 1)
+                : float2.zero;
+            float height = SampleHeight(grid);
+
+            if (index >= BaseVertexCount)
+            {
+                height -= SkirtDepth;
+            }
+
+            Vertices[index] = new Vector3(uv.x * ChunkSize, height, uv.y * ChunkSize);
+
+            if (WriteNormals != 0 && Normals.IsCreated)
+            {
+                Normals[index] = CalculateNormal(grid);
+            }
+
+            if (WriteUvs != 0 && Uvs.IsCreated)
+            {
+                Uvs[index] = new Vector2(uv.x, uv.y);
+            }
+        }
+
+        private int2 ResolveGrid(int index)
+        {
+            if (index < BaseVertexCount)
+            {
+                return new int2(index % Resolution, index / Resolution);
+            }
+
+            int skirtIndex = index - BaseVertexCount;
+            int side = skirtIndex / Resolution;
+            int sideIndex = skirtIndex - side * Resolution;
+
+            switch (side)
+            {
+                case 0:
+                    return new int2(sideIndex, Resolution - 1);
+                case 1:
+                    return new int2(Resolution - 1, sideIndex);
+                case 2:
+                    return new int2(Resolution - 1 - sideIndex, 0);
+                default:
+                    return new int2(0, Resolution - 1 - sideIndex);
+            }
+        }
+
+        private Vector3 CalculateNormal(int2 grid)
+        {
+            int last = Resolution - 1;
+            if (last <= 0 || Heights.Length == 0)
+            {
+                return new Vector3(0f, 1f, 0f);
+            }
+
+            int leftX = grid.x - 1;
+            int rightX = grid.x + 1;
+            int backZ = grid.y - 1;
+            int forwardZ = grid.y + 1;
+            float spacing = ChunkSize / math.max(1, last);
+            float dxDistance = math.max(0.0001f, (rightX - leftX) * spacing);
+            float dzDistance = math.max(0.0001f, (forwardZ - backZ) * spacing);
+            float dHdx = (SampleHeight(rightX, grid.y) - SampleHeight(leftX, grid.y)) / dxDistance;
+            float dHdz = (SampleHeight(grid.x, forwardZ) - SampleHeight(grid.x, backZ)) / dzDistance;
+            float3 normal = new float3(-dHdx, 1f, -dHdz);
+
+            if (math.lengthsq(normal) <= 0.000001f)
+            {
+                return new Vector3(0f, 1f, 0f);
+            }
+
+            normal = math.normalize(normal);
+            return new Vector3(normal.x, normal.y, normal.z);
+        }
+
+        private float SampleHeight(int2 grid)
+        {
+            return SampleHeight(grid.x, grid.y);
+        }
+
+        private float SampleHeight(int x, int z)
+        {
+            int mapX = math.clamp(x + HeightMapBorder, 0, HeightMapResolution - 1);
+            int mapZ = math.clamp(z + HeightMapBorder, 0, HeightMapResolution - 1);
+            int index = mapZ * HeightMapResolution + mapX;
+            return index >= 0 && index < Heights.Length ? Heights[index] : 0f;
         }
     }
 

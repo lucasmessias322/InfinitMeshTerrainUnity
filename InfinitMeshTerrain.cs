@@ -15,6 +15,8 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private const int SplatMapCount = 2;
     private const int SplatMapChannelCount = 4;
     private const int MaxTerrainLayerCount = SplatMapCount * SplatMapChannelCount;
+    private const int MaxSupportedLod = 5;
+    private const int HeightMapBorder = 1;
     private static readonly int[] SplatMapPropertyIds =
     {
         Shader.PropertyToID("_SplatMap"),
@@ -135,6 +137,18 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     [SerializeField] private bool useGeomipmappingLod = true;
     [SerializeField, Min(1f)] private float viewerMoveThreshold = 32f;
 
+    [Header("LOD")]
+    [SerializeField, Range(0, MaxSupportedLod)] private int maxLod = 3;
+    [Tooltip("Maximum viewer distance to a chunk bounds, measured in chunk sizes, for LOD0, LOD1, LOD2, LOD3 and LOD4. The final Max LOD starts after the last used band.")]
+    [SerializeField] private float[] lodDistanceBandsInChunks = { 1.25f, 3f, 6f, 10f, 14f };
+    [Tooltip("Chunks already using LOD0 keep it, but new LOD0 refinements wait while the viewer is moving faster than this. Set to 0 to disable deferral.")]
+    [SerializeField, Min(0f)] private float lod0MaxViewerSpeed = 256f;
+    [Tooltip("Extra time to wait after fast movement before scheduling new LOD0 refinements.")]
+    [SerializeField, Min(0f)] private float lod0SettleDelay = 0.25f;
+    [Tooltip("Distance margin, in chunk sizes, that prevents chunks from rapidly switching LOD near band edges.")]
+    [SerializeField, Min(0f)] private float lodHysteresisInChunks = 0.15f;
+    [SerializeField, Min(0f)] private float skirtDepth = 32f;
+
     [Header("Rendering")]
     [SerializeField] private Material chunkMaterial;
     [SerializeField] private TerrainHeightLayer[] terrainLayers =
@@ -154,8 +168,6 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     [SerializeField, Range(0f, 90f)] private float slopeRockStartAngle = 35f;
     [SerializeField, Range(0f, 90f)] private float slopeRockFullAngle = 55f;
     [SerializeField, Range(0f, 1f)] private float slopeRockStrength = 0.9f;
-    [SerializeField, Range(0, 5)] private int maxLod = 3;
-    [SerializeField, Min(0f)] private float skirtDepth = 32f;
 
     [Header("Collision")]
     [SerializeField] private bool useCollider = true;
@@ -177,6 +189,18 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     [SerializeField, Min(0)] private int cachedChunkPadding = 2;
     [Tooltip("Keeps recently unloaded chunk objects for reuse instead of destroying and recreating them while streaming.")]
     [SerializeField, Min(0)] private int maxPooledTerrainChunks = 256;
+
+    [Header("Far Terrain HLOD")]
+    [SerializeField] private bool useFarChunkHlod = true;
+    [Tooltip("Normal chunks are kept inside this radius. Farther terrain can be rendered as combined high-LOD clusters.")]
+    [SerializeField, Min(1)] private int farHlodStartDistanceInChunks = 6;
+    [Tooltip("Number of regular chunks covered by one far terrain cluster on each axis.")]
+    [SerializeField, Min(2)] private int farHlodClusterSizeInChunks = 4;
+    [Tooltip("LOD used for combined far clusters. Higher values are cheaper.")]
+    [SerializeField, Range(1, MaxSupportedLod)] private int farHlodLod = 4;
+    [SerializeField, Min(1)] private int maxConcurrentFarHlodTasks = 1;
+    [SerializeField, Min(1)] private int maxFarHlodAppliesPerFrame = 1;
+    [SerializeField, Min(0)] private int maxPooledFarHlodChunks = 64;
 
     [Header("Terrain Shape")]
     [SerializeField] private TerrainShapeSettingsSO terrainShapeSettings;
@@ -200,6 +224,14 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private readonly List<Vector2Int> completedTaskBuffer = new List<Vector2Int>();
     private readonly List<Vector2Int> completedColliderTaskBuffer = new List<Vector2Int>();
     private readonly Stack<TerrainChunk> pooledChunks = new Stack<TerrainChunk>();
+    private readonly Dictionary<Vector2Int, TerrainChunk> farHlodChunks = new Dictionary<Vector2Int, TerrainChunk>();
+    private readonly Dictionary<Vector2Int, TerrainBuildTask> runningFarHlodTasks = new Dictionary<Vector2Int, TerrainBuildTask>();
+    private readonly Queue<Vector2Int> farHlodBuildQueue = new Queue<Vector2Int>();
+    private readonly HashSet<Vector2Int> queuedFarHlodChunks = new HashSet<Vector2Int>();
+    private readonly HashSet<Vector2Int> visibleFarHlodCoords = new HashSet<Vector2Int>();
+    private readonly List<Vector2Int> farHlodRemovalBuffer = new List<Vector2Int>();
+    private readonly List<Vector2Int> completedFarHlodTaskBuffer = new List<Vector2Int>();
+    private readonly Stack<TerrainChunk> pooledFarHlodChunks = new Stack<TerrainChunk>();
 
     private readonly Dictionary<Vector2Int, GameObject> waterInstances = new Dictionary<Vector2Int, GameObject>();
     private readonly List<Vector2Int> waterRemovalBuffer = new List<Vector2Int>();
@@ -208,6 +240,9 @@ public partial class InfinitMeshTerrain : MonoBehaviour
     private Vector3 lastViewerUpdatePosition;
     private Vector3 lastViewerFramePosition;
     private Vector2 colliderMovementDirection;
+    private float terrainViewerSpeed;
+    private float lastFastLod0MoveTime = float.NegativeInfinity;
+    private bool wasDeferringLod0Refinement;
     private bool hasLastViewerFramePosition;
     private int terrainColliderVersion;
     private bool hasBuiltInitialSet;
@@ -258,6 +293,7 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         {
             UpdateWater();
             CompleteFinishedTasks();
+            CompleteFinishedFarHlodTasks();
             CompleteFinishedGrassTasks();
             return;
         }
@@ -265,18 +301,27 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         UpdateColliderPriorityMotion(viewer.position);
         Vector2Int viewerChunk = WorldToChunkCoord(viewer.position);
         UpdateGrassStreamingMotion();
+        bool shouldDeferLod0Refinement = ShouldDeferLod0Refinement();
+        bool lod0DeferralReleased = hasBuiltInitialSet
+            && wasDeferringLod0Refinement
+            && !shouldDeferLod0Refinement;
         float moveThresholdSqr = viewerMoveThreshold * viewerMoveThreshold;
         bool movedFarEnough = (viewer.position - lastViewerUpdatePosition).sqrMagnitude >= moveThresholdSqr;
 
-        if (!hasBuiltInitialSet || viewerChunk != lastViewerChunk || movedFarEnough)
+        if (!hasBuiltInitialSet || viewerChunk != lastViewerChunk || movedFarEnough || lod0DeferralReleased)
         {
             RefreshVisibleChunks(viewerChunk);
         }
 
+        wasDeferringLod0Refinement = shouldDeferLod0Refinement;
+
         UpdateWater();
+        ProcessQueuedTreeBuilds(treeSettings);
         CompleteFinishedTasks();
+        CompleteFinishedFarHlodTasks();
         CompleteFinishedGrassTasks();
         StartQueuedBuilds();
+        StartQueuedFarHlodBuilds();
         ProcessQueuedColliderUpdates();
         ProcessQueuedGrassUploads();
         UpdateGrassDetails();
@@ -299,6 +344,9 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         hasBuiltInitialSet = false;
         hasLastViewerFramePosition = false;
         colliderMovementDirection = Vector2.zero;
+        terrainViewerSpeed = 0f;
+        lastFastLod0MoveTime = float.NegativeInfinity;
+        wasDeferringLod0Refinement = false;
     }
 
     private void OnValidate()
@@ -317,7 +365,17 @@ public partial class InfinitMeshTerrain : MonoBehaviour
         maxChunkAppliesPerFrame = Mathf.Max(1, maxChunkAppliesPerFrame);
         cachedChunkPadding = Mathf.Max(0, cachedChunkPadding);
         maxPooledTerrainChunks = Mathf.Max(0, maxPooledTerrainChunks);
-        maxLod = Mathf.Clamp(maxLod, 0, 5);
+        maxLod = Mathf.Clamp(maxLod, 0, MaxSupportedLod);
+        ValidateLodDistanceBands();
+        farHlodStartDistanceInChunks = Mathf.Clamp(farHlodStartDistanceInChunks, 1, viewDistanceInChunks);
+        farHlodClusterSizeInChunks = Mathf.Max(2, farHlodClusterSizeInChunks);
+        farHlodLod = Mathf.Clamp(farHlodLod, 1, Mathf.Max(1, maxLod));
+        maxConcurrentFarHlodTasks = Mathf.Max(1, maxConcurrentFarHlodTasks);
+        maxFarHlodAppliesPerFrame = Mathf.Max(1, maxFarHlodAppliesPerFrame);
+        maxPooledFarHlodChunks = Mathf.Max(0, maxPooledFarHlodChunks);
+        lod0MaxViewerSpeed = Mathf.Max(0f, lod0MaxViewerSpeed);
+        lod0SettleDelay = Mathf.Max(0f, lod0SettleDelay);
+        lodHysteresisInChunks = Mathf.Max(0f, lodHysteresisInChunks);
         colliderDistanceInChunks = Mathf.Clamp(colliderDistanceInChunks, 0, viewDistanceInChunks);
         colliderMeshLod = Mathf.Clamp(colliderMeshLod, 0, maxLod);
         maxColliderUpdatesPerFrame = Mathf.Max(1, maxColliderUpdatesPerFrame);

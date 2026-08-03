@@ -22,6 +22,8 @@ public partial class InfinitMeshTerrain
     private readonly List<TreeInteractionCandidate> treeInteractionCandidates = new List<TreeInteractionCandidate>();
     private readonly List<ulong> activeInteractiveTreeRemovalBuffer = new List<ulong>();
     private readonly List<GameObject> pooledTreeDestroyBuffer = new List<GameObject>();
+    private readonly Queue<Vector2Int> treeBuildQueue = new Queue<Vector2Int>();
+    private readonly HashSet<Vector2Int> queuedTreeBuildChunks = new HashSet<Vector2Int>();
     private readonly Matrix4x4[] treeDrawScratch = new Matrix4x4[TreeDrawBatchSize];
     private TreeSettingsSO cachedTreeRenderSettings;
     private bool treeRenderCacheDirty = true;
@@ -33,6 +35,7 @@ public partial class InfinitMeshTerrain
     private Transform prefabTreePoolRoot;
     private int pooledPrefabTreeCount;
     private int prefabTreeSpawnBudgetRemaining;
+    private float nextInteractiveTreeUpdateTime;
 
     private void ValidateTreeSettings()
     {
@@ -50,6 +53,7 @@ public partial class InfinitMeshTerrain
         IReadOnlyList<TreeRenderPrototype> renderPrototypes = GetTreeRenderPrototypes(settings);
         if (settings == null || !settings.EnableTrees || renderPrototypes.Count == 0 || viewer == null)
         {
+            ClearQueuedTreeBuilds();
             ReleaseAllInteractiveTrees(false);
             ClearTreesFromRuntimeChunks();
             return;
@@ -89,7 +93,15 @@ public partial class InfinitMeshTerrain
 
             if (!chunk.HasTreeBuild)
             {
-                RequestBuild(coord);
+                if (chunk.HasTreeSurfaceData)
+                {
+                    RequestTreeBuild(coord);
+                }
+                else
+                {
+                    RequestBuild(coord);
+                }
+
                 continue;
             }
 
@@ -107,6 +119,158 @@ public partial class InfinitMeshTerrain
 
         return GetTreeRenderPrototypes(settings).Count > 0
             && IsChunkInsideTreeDistance(coord, GetTreeMaxRenderDistance(settings) + ChunkSize * 0.75f);
+    }
+
+    private void RequestTreeBuild(Vector2Int coord)
+    {
+        if (!queuedTreeBuildChunks.Add(coord))
+        {
+            return;
+        }
+
+        treeBuildQueue.Enqueue(coord);
+    }
+
+    private void ProcessQueuedTreeBuilds(TreeSettingsSO settings)
+    {
+        if (treeBuildQueue.Count == 0)
+        {
+            return;
+        }
+
+        if (settings == null || !settings.EnableTrees || viewer == null)
+        {
+            ClearQueuedTreeBuilds();
+            return;
+        }
+
+        IReadOnlyList<TreeRenderPrototype> renderPrototypes = GetTreeRenderPrototypes(settings);
+        if (renderPrototypes.Count == 0)
+        {
+            ClearQueuedTreeBuilds();
+            return;
+        }
+
+        IReadOnlyList<TreeBiomeRenderData> biomeRenderData = GetTreeBiomeRenderData(settings);
+        float globalTreeTotalDensity = GetGlobalTreeTotalDensity();
+        float maxTreeDensity = GetTreeMaxDensity();
+        bool useBiomeTreeSpawns = HasBiomeSpecificTreeSpawns(settings);
+        int terrainSeed = GetTerrainSeed();
+        float chunkSizeValue = ChunkSize;
+        SlopeTextureSettings slopeTextureSettings = CreateSlopeTextureSettings();
+        BiomeSamplingSettings biomeSettings = CreateBiomeSamplingSettings();
+        int budget = settings.MaxTreeChunksBuiltPerFrame;
+        int checkedQueuedBuilds = treeBuildQueue.Count;
+
+        while (budget > 0 && treeBuildQueue.Count > 0 && checkedQueuedBuilds > 0)
+        {
+            checkedQueuedBuilds--;
+            Vector2Int coord = treeBuildQueue.Dequeue();
+            if (!queuedTreeBuildChunks.Remove(coord))
+            {
+                continue;
+            }
+
+            if (!chunks.TryGetValue(coord, out TerrainChunk chunk)
+                || !visibleChunkCoords.Contains(coord)
+                || !chunk.HasMesh)
+            {
+                continue;
+            }
+
+            if (runningTasks.ContainsKey(coord) || queuedChunks.Contains(coord))
+            {
+                RequestTreeBuild(coord);
+                continue;
+            }
+
+            if (!ShouldBuildTreesForChunk(coord))
+            {
+                chunk.ClearTrees();
+                continue;
+            }
+
+            if (!chunk.HasTreeSurfaceData)
+            {
+                RequestBuild(coord);
+                continue;
+            }
+
+            chunk.ApplyTrees(
+                settings,
+                renderPrototypes,
+                biomeRenderData,
+                globalTreeTotalDensity,
+                maxTreeDensity,
+                useBiomeTreeSpawns,
+                terrainSeed,
+                chunkSizeValue,
+                enableWater,
+                waterHeight,
+                terrainLayers,
+                slopeTextureSettings,
+                biomeSettings);
+            budget--;
+        }
+    }
+
+    private void RequestVisibleTreeRebuilds()
+    {
+        ClearQueuedTreeBuilds();
+
+        foreach (Vector2Int coord in visibleChunkCoords)
+        {
+            if (!chunks.TryGetValue(coord, out TerrainChunk chunk))
+            {
+                continue;
+            }
+
+            chunk.ClearTrees();
+            if (!chunk.HasMesh || !ShouldBuildTreesForChunk(coord))
+            {
+                continue;
+            }
+
+            if (chunk.HasTreeSurfaceData)
+            {
+                RequestTreeBuild(coord);
+            }
+            else
+            {
+                RequestBuild(coord);
+            }
+        }
+    }
+
+    private void PruneQueuedTreeBuildsToVisibleChunks()
+    {
+        if (treeBuildQueue.Count == 0)
+        {
+            return;
+        }
+
+        int queuedCount = treeBuildQueue.Count;
+        queuedTreeBuildChunks.Clear();
+
+        for (int i = 0; i < queuedCount; i++)
+        {
+            Vector2Int coord = treeBuildQueue.Dequeue();
+            if (!visibleChunkCoords.Contains(coord)
+                || !chunks.TryGetValue(coord, out TerrainChunk chunk)
+                || !chunk.HasMesh
+                || !queuedTreeBuildChunks.Add(coord))
+            {
+                continue;
+            }
+
+            treeBuildQueue.Enqueue(coord);
+        }
+    }
+
+    private void ClearQueuedTreeBuilds()
+    {
+        treeBuildQueue.Clear();
+        queuedTreeBuildChunks.Clear();
     }
 
     private IReadOnlyList<TreeRenderPrototype> GetTreeRenderPrototypes(TreeSettingsSO settings)
@@ -371,8 +535,25 @@ public partial class InfinitMeshTerrain
             || settings.InteractiveDistance <= 0f
             || viewer == null)
         {
+            nextInteractiveTreeUpdateTime = 0f;
             ReleaseAllInteractiveTrees(false);
             return;
+        }
+
+        float updateInterval = settings.InteractiveUpdateInterval;
+        if (updateInterval > 0f)
+        {
+            float now = Time.time;
+            if (now < nextInteractiveTreeUpdateTime)
+            {
+                return;
+            }
+
+            nextInteractiveTreeUpdateTime = now + updateInterval;
+        }
+        else
+        {
+            nextInteractiveTreeUpdateTime = 0f;
         }
 
         EnsureInteractiveTreeRoot();
@@ -1030,6 +1211,7 @@ public partial class InfinitMeshTerrain
 
     private void ClearTreesFromRuntimeChunks()
     {
+        ClearQueuedTreeBuilds();
         ReleaseAllInteractiveTrees(false);
         foreach (TerrainChunk chunk in chunks.Values)
         {
@@ -1050,6 +1232,9 @@ public partial class InfinitMeshTerrain
         cachedTreeMaxDensity = 0f;
         cachedTreeMaxRenderDistance = 0f;
         prefabTreeSpawnBudgetRemaining = 0;
+        nextInteractiveTreeUpdateTime = 0f;
+        treeInteractionCandidates.Clear();
+        ClearQueuedTreeBuilds();
         treeRenderCacheDirty = true;
     }
 
@@ -1085,9 +1270,9 @@ public partial class InfinitMeshTerrain
     {
         ValidateTreeSettings();
         treeRenderCacheDirty = true;
+        nextInteractiveTreeUpdateTime = 0f;
         ReleaseAllInteractiveTrees(true);
-        ClearTreesFromRuntimeChunks();
-        RequestVisibleChunkRebuilds();
+        RequestVisibleTreeRebuilds();
     }
 
     private static void DestroyRuntimeObject(UnityEngine.Object target)
@@ -1385,15 +1570,66 @@ public partial class InfinitMeshTerrain
         private readonly List<TreeRenderCell> treeRenderCells = new List<TreeRenderCell>();
         private readonly List<TreeInstanceData> treeInstances = new List<TreeInstanceData>();
         private readonly List<PrefabTreeInstance> prefabTreeInstances = new List<PrefabTreeInstance>();
+        private Vector3[] treeSurfaceVertices = Array.Empty<Vector3>();
+        private Vector3[] treeSurfaceNormals = Array.Empty<Vector3>();
+        private int treeSurfaceVertexCount;
+        private int treeSurfaceResolution;
         private int treeLodCount = 1;
         private int treeRenderCellsPerAxis = 1;
         private float treeRenderCellSize = 1f;
         private bool treesBuilt;
 
         public bool HasTreeBuild => treesBuilt;
+        public bool HasTreeSurfaceData => treeSurfaceVertexCount > 0
+            && treeSurfaceResolution >= 2
+            && treeSurfaceVertices != null
+            && treeSurfaceNormals != null
+            && treeSurfaceVertices.Length >= treeSurfaceVertexCount
+            && treeSurfaceNormals.Length >= treeSurfaceVertexCount;
         public IReadOnlyList<TreeInstanceData> TreeInstances => treeInstances;
 
         private int MaxTreeLodIndex => Mathf.Max(0, treeLodCount - 1);
+
+        private void CaptureTreeSurfaceData(TerrainBuildTask task)
+        {
+            if (task == null || task.BaseVertexCount <= 0 || task.Resolution < 2)
+            {
+                ClearTreeSurfaceData();
+                return;
+            }
+
+            int baseVertexCount = Mathf.Min(task.BaseVertexCount, Mathf.Min(task.Vertices.Length, task.Normals.Length));
+            if (baseVertexCount <= 0)
+            {
+                ClearTreeSurfaceData();
+                return;
+            }
+
+            if (treeSurfaceVertices == null || treeSurfaceVertices.Length < baseVertexCount)
+            {
+                treeSurfaceVertices = new Vector3[baseVertexCount];
+            }
+
+            if (treeSurfaceNormals == null || treeSurfaceNormals.Length < baseVertexCount)
+            {
+                treeSurfaceNormals = new Vector3[baseVertexCount];
+            }
+
+            for (int i = 0; i < baseVertexCount; i++)
+            {
+                treeSurfaceVertices[i] = task.Vertices[i];
+                treeSurfaceNormals[i] = task.Normals[i];
+            }
+
+            treeSurfaceVertexCount = baseVertexCount;
+            treeSurfaceResolution = task.Resolution;
+        }
+
+        private void ClearTreeSurfaceData()
+        {
+            treeSurfaceVertexCount = 0;
+            treeSurfaceResolution = 0;
+        }
 
         private static int GetTreeLodCount(IReadOnlyList<TreeRenderPrototype> renderPrototypes)
         {
@@ -1448,14 +1684,12 @@ public partial class InfinitMeshTerrain
         }
 
         public void ApplyTrees(
-            TerrainBuildTask task,
             TreeSettingsSO settings,
             IReadOnlyList<TreeRenderPrototype> renderPrototypes,
             IReadOnlyList<TreeBiomeRenderData> treeBiomeData,
             float globalTreeTotalDensity,
             float maxTreeDensity,
             bool useBiomeTreeSpawns,
-            bool shouldBuildTrees,
             int terrainSeed,
             float chunkSize,
             bool enableWater,
@@ -1469,15 +1703,13 @@ public partial class InfinitMeshTerrain
             float candidateDensity = useBiomeTreeSpawns
                 ? Mathf.Max(0f, maxTreeDensity)
                 : Mathf.Max(0f, globalTreeTotalDensity);
-            if (!shouldBuildTrees
-                || settings == null
+            if (settings == null
                 || !settings.EnableTrees
                 || renderPrototypes == null
                 || renderPrototypes.Count == 0
                 || candidateDensity <= 0f
                 || settings.MaxInstancesPerChunk <= 0
-                || task.BaseVertexCount <= 0
-                || task.Resolution < 2)
+                || !HasTreeSurfaceData)
             {
                 return;
             }
@@ -1516,7 +1748,7 @@ public partial class InfinitMeshTerrain
                         local.x = Mathf.Clamp(local.x, 0.001f, chunkSize - 0.001f);
                         local.y = Mathf.Clamp(local.y, 0.001f, chunkSize - 0.001f);
 
-                        if (!TrySampleSurface(task, local, chunkSize, out Vector3 position, out Vector3 normal))
+                        if (!TrySampleSurface(local, chunkSize, out Vector3 position, out Vector3 normal))
                         {
                             continue;
                         }
@@ -1872,48 +2104,54 @@ public partial class InfinitMeshTerrain
             return null;
         }
 
-        private static bool TrySampleSurface(
-            TerrainBuildTask task,
+        private bool TrySampleSurface(
             Vector2 local,
             float chunkSize,
             out Vector3 position,
             out Vector3 normal)
         {
-            float u = Mathf.Clamp01(local.x / chunkSize);
-            float v = Mathf.Clamp01(local.y / chunkSize);
-            float gridX = u * (task.Resolution - 1);
-            float gridZ = v * (task.Resolution - 1);
-            int x0 = Mathf.Clamp(Mathf.FloorToInt(gridX), 0, task.Resolution - 1);
-            int z0 = Mathf.Clamp(Mathf.FloorToInt(gridZ), 0, task.Resolution - 1);
-            int x1 = Mathf.Min(x0 + 1, task.Resolution - 1);
-            int z1 = Mathf.Min(z0 + 1, task.Resolution - 1);
-            float tx = gridX - x0;
-            float tz = gridZ - z0;
-
-            int i00 = z0 * task.Resolution + x0;
-            int i10 = z0 * task.Resolution + x1;
-            int i01 = z1 * task.Resolution + x0;
-            int i11 = z1 * task.Resolution + x1;
-
-            if (i11 >= task.BaseVertexCount)
+            if (!HasTreeSurfaceData)
             {
                 position = default;
                 normal = Vector3.up;
                 return false;
             }
 
-            float h00 = task.Vertices[i00].y;
-            float h10 = task.Vertices[i10].y;
-            float h01 = task.Vertices[i01].y;
-            float h11 = task.Vertices[i11].y;
+            float u = Mathf.Clamp01(local.x / chunkSize);
+            float v = Mathf.Clamp01(local.y / chunkSize);
+            float gridX = u * (treeSurfaceResolution - 1);
+            float gridZ = v * (treeSurfaceResolution - 1);
+            int x0 = Mathf.Clamp(Mathf.FloorToInt(gridX), 0, treeSurfaceResolution - 1);
+            int z0 = Mathf.Clamp(Mathf.FloorToInt(gridZ), 0, treeSurfaceResolution - 1);
+            int x1 = Mathf.Min(x0 + 1, treeSurfaceResolution - 1);
+            int z1 = Mathf.Min(z0 + 1, treeSurfaceResolution - 1);
+            float tx = gridX - x0;
+            float tz = gridZ - z0;
+
+            int i00 = z0 * treeSurfaceResolution + x0;
+            int i10 = z0 * treeSurfaceResolution + x1;
+            int i01 = z1 * treeSurfaceResolution + x0;
+            int i11 = z1 * treeSurfaceResolution + x1;
+
+            if (i11 >= treeSurfaceVertexCount)
+            {
+                position = default;
+                normal = Vector3.up;
+                return false;
+            }
+
+            float h00 = treeSurfaceVertices[i00].y;
+            float h10 = treeSurfaceVertices[i10].y;
+            float h01 = treeSurfaceVertices[i01].y;
+            float h11 = treeSurfaceVertices[i11].y;
             float height0 = Mathf.Lerp(h00, h10, tx);
             float height1 = Mathf.Lerp(h01, h11, tx);
             float surfaceHeight = Mathf.Lerp(height0, height1, tz);
 
-            Vector3 n00 = task.Normals[i00];
-            Vector3 n10 = task.Normals[i10];
-            Vector3 n01 = task.Normals[i01];
-            Vector3 n11 = task.Normals[i11];
+            Vector3 n00 = treeSurfaceNormals[i00];
+            Vector3 n10 = treeSurfaceNormals[i10];
+            Vector3 n01 = treeSurfaceNormals[i01];
+            Vector3 n11 = treeSurfaceNormals[i11];
             Vector3 normal0 = Vector3.Lerp(n00, n10, tx);
             Vector3 normal1 = Vector3.Lerp(n01, n11, tx);
             normal = Vector3.Lerp(normal0, normal1, tz).normalized;

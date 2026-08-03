@@ -43,6 +43,7 @@ public partial class InfinitMeshTerrain
             ActiveBiomeLayerColorMask = ActiveBiomeLayerColorCount > 0 ? activeBiomeLayerColorMask : 0;
             BiomeLayerColorResolution = Resolution;
             BiomeLayerColorPixelCount = ActiveBiomeLayerColorCount > 0 ? baseVertexCount : 0;
+            Heights = new NativeArray<float>(GetHeightMapVertexCount(Resolution), Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Vertices = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Normals = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Uvs = new NativeArray<Vector2>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -109,6 +110,7 @@ public partial class InfinitMeshTerrain
         public int BiomeLayerColorResolution { get; }
         public int BiomeLayerColorPixelCount { get; }
         public JobHandle Handle;
+        public NativeArray<float> Heights;
         public NativeArray<Vector3> Vertices;
         public NativeArray<Vector3> Normals;
         public NativeArray<Vector2> Uvs;
@@ -146,6 +148,11 @@ public partial class InfinitMeshTerrain
             if (Uvs.IsCreated)
             {
                 Uvs.Dispose();
+            }
+
+            if (Heights.IsCreated)
+            {
+                Heights.Dispose();
             }
 
             if (OwnsIndices && Indices.IsCreated)
@@ -243,6 +250,7 @@ public partial class InfinitMeshTerrain
             BaseVertexCount = baseVertexCount;
             Resolution = Mathf.RoundToInt(Mathf.Sqrt(baseVertexCount));
             OwnsIndices = ownsIndices;
+            Heights = new NativeArray<float>(GetHeightMapVertexCount(Resolution), Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Vertices = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Indices = indices.IsCreated
                 ? indices
@@ -270,6 +278,7 @@ public partial class InfinitMeshTerrain
         public int Resolution { get; }
         public bool OwnsIndices { get; private set; }
         public JobHandle Handle;
+        public NativeArray<float> Heights;
         public NativeArray<Vector3> Vertices;
         public NativeArray<Vector3> DummyNormals;
         public NativeArray<Vector2> DummyUvs;
@@ -282,6 +291,11 @@ public partial class InfinitMeshTerrain
             if (Vertices.IsCreated)
             {
                 Vertices.Dispose();
+            }
+
+            if (Heights.IsCreated)
+            {
+                Heights.Dispose();
             }
 
             if (OwnsIndices && Indices.IsCreated)
@@ -331,6 +345,7 @@ public partial class InfinitMeshTerrain
             SurfaceVertexCount = surfaceVertexCount;
             GrassInstanceCapacity = Mathf.Max(0, grassInstanceCapacity);
             UseGpuGeneration = useGpuGeneration;
+            Heights = new NativeArray<float>(GetHeightMapVertexCount(SurfaceResolution), Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Vertices = new NativeArray<Vector3>(surfaceVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Normals = new NativeArray<Vector3>(surfaceVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Uvs = new NativeArray<Vector2>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -370,6 +385,7 @@ public partial class InfinitMeshTerrain
         public int GrassInstanceCapacity { get; }
         public bool UseGpuGeneration { get; }
         public JobHandle Handle;
+        public NativeArray<float> Heights;
         public NativeArray<Vector3> Vertices;
         public NativeArray<Vector3> Normals;
         public NativeArray<Vector2> Uvs;
@@ -400,6 +416,11 @@ public partial class InfinitMeshTerrain
             if (Uvs.IsCreated)
             {
                 Uvs.Dispose();
+            }
+
+            if (Heights.IsCreated)
+            {
+                Heights.Dispose();
             }
 
             if (HeightLayers.IsCreated)

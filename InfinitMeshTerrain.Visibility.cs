@@ -6,6 +6,7 @@ public partial class InfinitMeshTerrain
     private void RefreshVisibleChunks(Vector2Int viewerChunk)
     {
         visibleChunkCoords.Clear();
+        visibleFarHlodCoords.Clear();
         candidateBuffer.Clear();
 
         int radius = Mathf.Max(1, viewDistanceInChunks);
@@ -27,8 +28,28 @@ public partial class InfinitMeshTerrain
 
         candidateBuffer.Sort((a, b) => a.DistanceSqr.CompareTo(b.DistanceSqr));
 
+        if (ShouldUseFarChunkHlod())
+        {
+            foreach (ChunkCandidate candidate in candidateBuffer)
+            {
+                Vector2Int farCoord = ChunkToFarHlodCoord(candidate.Coord);
+                if (visibleFarHlodCoords.Contains(farCoord)
+                    || !IsFarHlodClusterVisible(farCoord, viewer.position))
+                {
+                    continue;
+                }
+
+                visibleFarHlodCoords.Add(farCoord);
+            }
+        }
+
         foreach (ChunkCandidate candidate in candidateBuffer)
         {
+            if (ShouldUseFarChunkHlod() && IsChunkCoveredByReadyFarHlod(candidate.Coord))
+            {
+                continue;
+            }
+
             visibleChunkCoords.Add(candidate.Coord);
         }
 
@@ -67,14 +88,18 @@ public partial class InfinitMeshTerrain
         foreach (ChunkCandidate candidate in candidateBuffer)
         {
             Vector2Int coord = candidate.Coord;
+            if (!visibleChunkCoords.Contains(coord))
+            {
+                continue;
+            }
 
-            int desiredLod = ClampLodForCollider(coord, viewerChunk, SelectLod(candidate.DistanceSqr));
             if (!chunks.TryGetValue(coord, out TerrainChunk chunk))
             {
                 chunk = CreateChunk(coord);
                 chunks.Add(coord, chunk);
             }
 
+            int desiredLod = ClampLodForCollider(coord, viewerChunk, SelectLod(coord, viewer.position, chunk));
             chunk.SetVisible(true);
             chunk.DesiredLod = desiredLod;
             if (useCollider && IsChunkInsideColliderDistance(coord, viewerChunk))
@@ -90,6 +115,11 @@ public partial class InfinitMeshTerrain
         foreach (ChunkCandidate candidate in candidateBuffer)
         {
             Vector2Int coord = candidate.Coord;
+            if (!visibleChunkCoords.Contains(coord))
+            {
+                continue;
+            }
+
             TerrainChunk chunk = chunks[coord];
             chunk.DesiredStitching = CalculateDesiredStitching(coord, chunk.DesiredLod);
 
@@ -100,6 +130,8 @@ public partial class InfinitMeshTerrain
         }
 
         PruneQueuedBuildsToVisibleChunks();
+        PruneQueuedTreeBuildsToVisibleChunks();
+        RefreshVisibleFarHlodChunks(viewerChunk);
 
         lastViewerChunk = viewerChunk;
         lastViewerUpdatePosition = viewer.position;
@@ -132,6 +164,7 @@ public partial class InfinitMeshTerrain
         ReleaseInteractiveTreesForChunk(coord, true);
         chunks.Remove(coord);
         queuedChunks.Remove(coord);
+        queuedTreeBuildChunks.Remove(coord);
         queuedColliderChunks.Remove(coord);
 
         if (Application.isPlaying && pooledChunks.Count < maxPooledTerrainChunks)

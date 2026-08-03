@@ -160,29 +160,41 @@ public partial class InfinitMeshTerrain
         SlopeTextureSettings slopeTextureSettings = CreateSlopeTextureSettings();
         float chunkSizeValue = ChunkSize;
         float2 chunkOrigin = new float2(coord.x * chunkSizeValue, coord.y * chunkSizeValue);
+        int heightMapResolution = GetHeightMapResolution(resolution);
 
-        GenerateTerrainVerticesJob verticesJob = new GenerateTerrainVerticesJob
+        GenerateTerrainHeightMapJob heightMapJob = new GenerateTerrainHeightMapJob
         {
-            Vertices = task.Vertices,
-            Normals = task.Normals,
-            Uvs = task.Uvs,
+            Heights = task.Heights,
             Settings = settings,
             HeightLayers = task.HeightLayers,
             HeightSplineSamples = task.HeightSplineSamples,
             HeightLayerCount = task.HeightLayers.IsCreated ? task.HeightLayers.Length : 0,
             ChunkOrigin = chunkOrigin,
             ChunkSize = chunkSizeValue,
-            SkirtDepth = skirtDepth,
             Resolution = resolution,
-            BaseVertexCount = baseVertexCount,
+            HeightMapResolution = heightMapResolution,
             SegmentCount = segmentCount,
             LodStep = step,
-            WriteNormals = 1,
-            WriteUvs = 1,
             Stitching = stitching
         };
 
-        JobHandle verticesHandle = verticesJob.ScheduleParallel(vertexCount, 64, default);
+        JobHandle heightMapHandle = heightMapJob.ScheduleParallel(task.Heights.Length, 64, default);
+        GenerateTerrainVerticesJob verticesJob = new GenerateTerrainVerticesJob
+        {
+            Heights = task.Heights,
+            Vertices = task.Vertices,
+            Normals = task.Normals,
+            Uvs = task.Uvs,
+            ChunkSize = chunkSizeValue,
+            SkirtDepth = skirtDepth,
+            Resolution = resolution,
+            HeightMapResolution = heightMapResolution,
+            BaseVertexCount = baseVertexCount,
+            WriteNormals = 1,
+            WriteUvs = 1
+        };
+
+        JobHandle verticesHandle = verticesJob.ScheduleParallel(vertexCount, 64, heightMapHandle);
         BuildTerrainSplatMapsJob splatMapsJob = new BuildTerrainSplatMapsJob
         {
             Vertices = task.Vertices,
@@ -317,28 +329,20 @@ public partial class InfinitMeshTerrain
 
     private void ApplyCompletedTask(Vector2Int coord, TerrainChunk chunk, TerrainBuildTask task)
     {
-        TreeSettingsSO currentTreeSettings = treeSettings;
-        IReadOnlyList<TreeRenderPrototype> currentTreeRenderPrototypes = GetTreeRenderPrototypes(currentTreeSettings);
-        IReadOnlyList<TreeBiomeRenderData> currentTreeBiomeRenderData = GetTreeBiomeRenderData(currentTreeSettings);
+        bool shouldBuildTrees = ShouldBuildTreesForChunk(coord);
         chunk.Apply(
             task,
             chunkMaterial,
             false,
             terrainLayers,
-            CreateSlopeTextureSettings(),
-            CreateBiomeSamplingSettings(),
             !ShouldDeferGrassStreaming(),
-            currentTreeSettings,
-            currentTreeRenderPrototypes,
-            currentTreeBiomeRenderData,
-            GetGlobalTreeTotalDensity(),
-            GetTreeMaxDensity(),
-            HasBiomeSpecificTreeSpawns(currentTreeSettings),
-            ShouldBuildTreesForChunk(coord),
-            GetTerrainSeed(),
-            ChunkSize,
-            enableWater,
-            waterHeight);
+            true,
+            ChunkSize);
+
+        if (shouldBuildTrees)
+        {
+            RequestTreeBuild(coord);
+        }
 
         if (ShouldUseColliderForChunk(coord))
         {
@@ -361,6 +365,7 @@ public partial class InfinitMeshTerrain
         runningTasks.Clear();
         buildQueue.Clear();
         queuedChunks.Clear();
+        CompleteAndDisposeAllFarHlodTasks();
         CompleteAndDisposeAllColliderTasks();
         CompleteAndDisposeAllGrassTasks();
         DisposeTerrainIndexCache();
@@ -379,6 +384,7 @@ public partial class InfinitMeshTerrain
         chunks.Clear();
         visibleChunkCoords.Clear();
         DisposePooledChunks();
+        ClearRuntimeFarHlodChunks();
     }
 
     private void DisposePooledChunks()
@@ -396,5 +402,7 @@ public partial class InfinitMeshTerrain
         {
             RequestBuild(coord);
         }
+
+        RequestVisibleFarHlodRebuilds();
     }
 }

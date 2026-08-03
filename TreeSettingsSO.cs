@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 public sealed class TreeSettingsSO : ScriptableObject
 {
     private static readonly TreePrototypeSettings[] EmptyPrototypes = Array.Empty<TreePrototypeSettings>();
+    private const int CurrentSerializedVersion = 1;
 
     public const float DefaultTreeDistance = 1536f;
     public const float DefaultRenderCellSize = 256f;
@@ -17,15 +18,19 @@ public sealed class TreeSettingsSO : ScriptableObject
     public const int DefaultSeedOffset = 27183;
     public const float DefaultInteractiveDistance = 96f;
     public const float DefaultInteractiveReleaseDistance = 128f;
+    public const float DefaultInteractiveUpdateInterval = 0.1f;
     public const int DefaultMaxInteractiveInstances = 96;
     public const int DefaultMaxInteractiveSpawnsPerFrame = 8;
     public const int DefaultMaxPrefabTreeSpawnsPerFrame = 32;
     public const int DefaultMaxPooledPrefabTreeInstances = 2048;
+    public const int DefaultMaxTreeChunksBuiltPerFrame = 1;
     public const int MaxInstancedMeshLodIndex = 7;
 
     private static readonly TreeMeshLodDistance[] EmptyInstancedMeshLodDistances = Array.Empty<TreeMeshLodDistance>();
 
     public event Action Changed;
+
+    [SerializeField, HideInInspector] private int serializedVersion = CurrentSerializedVersion;
 
     [Header("Rendering")]
     [SerializeField] private bool enableTrees = true;
@@ -51,9 +56,13 @@ public sealed class TreeSettingsSO : ScriptableObject
     [SerializeField] private bool enableInteractiveTrees = true;
     [SerializeField, Min(0f)] private float interactiveDistance = DefaultInteractiveDistance;
     [SerializeField, Min(0f)] private float interactiveReleaseDistance = DefaultInteractiveReleaseDistance;
+    [SerializeField, Min(0f)] private float interactiveUpdateInterval = DefaultInteractiveUpdateInterval;
     [SerializeField, Min(0)] private int maxInteractiveInstances = DefaultMaxInteractiveInstances;
     [SerializeField, Min(1)] private int maxInteractiveSpawnsPerFrame = DefaultMaxInteractiveSpawnsPerFrame;
     [SerializeField] private bool hideInstancedTreesWhenInteractive = true;
+
+    [Header("Tree Build Streaming")]
+    [SerializeField, Min(1)] private int maxTreeChunksBuiltPerFrame = DefaultMaxTreeChunksBuiltPerFrame;
 
     [Header("Distribution")]
     [SerializeField, Min(0.1f)] private float cellSize = DefaultCellSize;
@@ -79,9 +88,11 @@ public sealed class TreeSettingsSO : ScriptableObject
     public bool EnableInteractiveTrees => enableInteractiveTrees;
     public float InteractiveDistance => Mathf.Max(0f, interactiveDistance);
     public float InteractiveReleaseDistance => Mathf.Max(InteractiveDistance, interactiveReleaseDistance);
+    public float InteractiveUpdateInterval => Mathf.Max(0f, interactiveUpdateInterval);
     public int MaxInteractiveInstances => Mathf.Max(0, maxInteractiveInstances);
     public int MaxInteractiveSpawnsPerFrame => Mathf.Max(1, maxInteractiveSpawnsPerFrame);
     public bool HideInstancedTreesWhenInteractive => hideInstancedTreesWhenInteractive;
+    public int MaxTreeChunksBuiltPerFrame => Mathf.Max(1, maxTreeChunksBuiltPerFrame);
     public float CellSize => Mathf.Max(0.1f, cellSize);
     public int MaxInstancesPerChunk => Mathf.Max(0, maxInstancesPerChunk);
     public int MaxInstancesPerCell => Mathf.Clamp(maxInstancesPerCell, 1, 8);
@@ -160,6 +171,13 @@ public sealed class TreeSettingsSO : ScriptableObject
 
     public void ValidateValues()
     {
+        if (serializedVersion < CurrentSerializedVersion)
+        {
+            interactiveUpdateInterval = DefaultInteractiveUpdateInterval;
+            maxTreeChunksBuiltPerFrame = DefaultMaxTreeChunksBuiltPerFrame;
+            serializedVersion = CurrentSerializedVersion;
+        }
+
         treeDistance = Mathf.Max(1f, treeDistance);
         renderCellSize = renderCellSize <= 0f
             ? DefaultRenderCellSize
@@ -168,8 +186,10 @@ public sealed class TreeSettingsSO : ScriptableObject
         maxPooledPrefabTreeInstances = Mathf.Max(0, maxPooledPrefabTreeInstances);
         interactiveDistance = Mathf.Max(0f, interactiveDistance);
         interactiveReleaseDistance = Mathf.Max(interactiveDistance, interactiveReleaseDistance);
+        interactiveUpdateInterval = Mathf.Max(0f, interactiveUpdateInterval);
         maxInteractiveInstances = Mathf.Max(0, maxInteractiveInstances);
         maxInteractiveSpawnsPerFrame = Mathf.Max(1, maxInteractiveSpawnsPerFrame);
+        maxTreeChunksBuiltPerFrame = Mathf.Max(1, maxTreeChunksBuiltPerFrame);
         cellSize = Mathf.Max(0.1f, cellSize);
         maxInstancesPerChunk = Mathf.Max(0, maxInstancesPerChunk);
         maxInstancesPerCell = Mathf.Clamp(maxInstancesPerCell, 1, 8);
@@ -233,6 +253,12 @@ public struct TreeMeshLodDistance
 public sealed class TreePrototypeSettings
 {
     private static readonly GameObject[] EmptyPrefabVariations = Array.Empty<GameObject>();
+    private const int CurrentSerializedVersion = 1;
+
+    [SerializeField, HideInInspector] private int serializedVersion = CurrentSerializedVersion;
+
+    [Header("Prototype")]
+    [SerializeField, InspectorName("Enabled")] private bool prototypeEnabled = true;
 
     [Header("Prefab")]
     [SerializeField] private GameObject prefab;
@@ -281,6 +307,7 @@ public sealed class TreePrototypeSettings
     [SerializeField, Min(0.001f)] private float forestBlendRange = 0.22f;
 
     public GameObject Prefab => GetPrefabVariation(0);
+    public bool Enabled => prototypeEnabled;
     public IReadOnlyList<GameObject> PrefabVariations => prefabVariations != null ? prefabVariations : EmptyPrefabVariations;
     public int PrefabVariationCount => CountPrefabVariations();
     public GameObject FelledPrefab => felledPrefab;
@@ -317,7 +344,7 @@ public sealed class TreePrototypeSettings
     public float ForestNoiseFrequency => Mathf.Max(0f, forestNoiseFrequency);
     public float ForestThreshold => Mathf.Clamp01(forestThreshold);
     public float ForestBlendRange => Mathf.Max(0.001f, forestBlendRange);
-    public bool IsSpawnable => PrefabVariationCount > 0 && DensityPerSquareMeter > 0f;
+    public bool IsSpawnable => Enabled && PrefabVariationCount > 0 && DensityPerSquareMeter > 0f;
 
     public GameObject GetPrefabVariation(int variationIndex)
     {
@@ -350,6 +377,12 @@ public sealed class TreePrototypeSettings
 
     public void ValidateValues()
     {
+        if (serializedVersion < CurrentSerializedVersion)
+        {
+            prototypeEnabled = true;
+            serializedVersion = CurrentSerializedVersion;
+        }
+
         densityPerHectare = Mathf.Max(0f, densityPerHectare);
         maxRenderDistance = maxRenderDistance <= 0f
             ? TreeSettingsSO.DefaultTreeDistance

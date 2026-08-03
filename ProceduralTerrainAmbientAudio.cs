@@ -10,8 +10,10 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
     [Header("References")]
     [SerializeField] private InfinitMeshTerrain terrain;
     [SerializeField] private Transform listener;
+    [SerializeField] private WaveManager waveManager;
     [SerializeField] private AudioSource seaSource;
     [SerializeField] private AudioSource birdsSource;
+    [SerializeField] private AudioSource underwaterSource;
 
     [Header("Sampling")]
     [SerializeField, Min(0.02f)] private float sampleInterval = 0.25f;
@@ -30,6 +32,18 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
     [SerializeField, Range(4, 32)] private int seaSamplesPerRing = 12;
     [SerializeField, Range(1, 5)] private int seaSampleRings = 3;
 
+    [Header("Underwater")]
+    [SerializeField] private bool enableUnderwaterAudio = true;
+    [Tooltip("Optional. When set, this clip is assigned to the underwater source at runtime.")]
+    [SerializeField] private AudioClip underwaterClip;
+    [SerializeField, Range(0f, 1f)] private float underwaterMaxVolume = 1f;
+    [SerializeField, Min(0f)] private float underwaterFullVolumeDepth = 1f;
+    [SerializeField, Min(0f)] private float underwaterSurfaceHysteresis = 0.05f;
+    [Tooltip("Uses WaveManager when available so underwater audio follows the rendered waves.")]
+    [SerializeField] private bool useWaveManagerWaterHeight = true;
+    [SerializeField, Range(0f, 1f)] private float seaDuckingUnderwater = 0.65f;
+    [SerializeField, Range(0f, 1f)] private float birdsDuckingUnderwater = 1f;
+
     [Header("Forest")]
     [SerializeField] private bool enableBirdsAudio = true;
     [SerializeField, Range(0f, 1f)] private float birdsMaxVolume = 0.85f;
@@ -45,8 +59,13 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
     private float nextSampleTime;
     private float seaTargetVolume;
     private float birdsTargetVolume;
+    private float underwaterTargetVolume;
     private float seaCurrentVolume;
     private float birdsCurrentVolume;
+    private float underwaterCurrentVolume;
+
+    public bool IsListenerUnderwater { get; private set; }
+    public float WaterSurfaceHeight { get; private set; }
 
     private void Reset()
     {
@@ -62,6 +81,11 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
         {
             birdsSource = sources[1];
         }
+
+        if (sources.Length > 2)
+        {
+            underwaterSource = sources[2];
+        }
     }
 
     private void Awake()
@@ -69,19 +93,26 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
         ResolveMissingReferences();
         PrepareSource(seaSource);
         PrepareSource(birdsSource);
+        PrepareUnderwaterSource();
     }
 
     private void OnEnable()
     {
         nextSampleTime = 0f;
+        PrepareUnderwaterSource();
         SampleAudioTargets();
         ApplySourceVolume(seaSource, seaTargetVolume, ref seaCurrentVolume, true);
         ApplySourceVolume(birdsSource, birdsTargetVolume, ref birdsCurrentVolume, true);
+        ApplySourceVolume(underwaterSource, underwaterTargetVolume, ref underwaterCurrentVolume, true);
     }
 
     private void Update()
     {
-        if (autoFindReferences && (terrain == null || listener == null))
+        bool needsReferences = terrain == null
+            || listener == null
+            || (useWaveManagerWaterHeight && waveManager == null);
+
+        if (autoFindReferences && needsReferences)
         {
             ResolveMissingReferences();
         }
@@ -94,14 +125,17 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
 
         ApplySourceVolume(seaSource, seaTargetVolume, ref seaCurrentVolume, false);
         ApplySourceVolume(birdsSource, birdsTargetVolume, ref birdsCurrentVolume, false);
+        ApplySourceVolume(underwaterSource, underwaterTargetVolume, ref underwaterCurrentVolume, false);
     }
 
     private void OnDisable()
     {
         SetSourceVolume(seaSource, 0f);
         SetSourceVolume(birdsSource, 0f);
+        SetSourceVolume(underwaterSource, 0f);
         seaCurrentVolume = 0f;
         birdsCurrentVolume = 0f;
+        underwaterCurrentVolume = 0f;
     }
 
     private void OnValidate()
@@ -112,6 +146,11 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
         seaFullVolumeDistance = Mathf.Clamp(seaFullVolumeDistance, 0f, seaAudibleDistance);
         waterHeightPadding = Mathf.Max(0f, waterHeightPadding);
         shorelineHeightFade = Mathf.Max(0f, shorelineHeightFade);
+        underwaterMaxVolume = Mathf.Clamp01(underwaterMaxVolume);
+        underwaterFullVolumeDepth = Mathf.Max(0f, underwaterFullVolumeDepth);
+        underwaterSurfaceHysteresis = Mathf.Max(0f, underwaterSurfaceHysteresis);
+        seaDuckingUnderwater = Mathf.Clamp01(seaDuckingUnderwater);
+        birdsDuckingUnderwater = Mathf.Clamp01(birdsDuckingUnderwater);
         forestAudibleDistance = Mathf.Max(1f, forestAudibleDistance);
         forestFullVolumeDistance = Mathf.Clamp(forestFullVolumeDistance, 0f, forestAudibleDistance);
         minimumForestTreeDensity = Mathf.Max(0f, minimumForestTreeDensity);
@@ -129,6 +168,13 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
         if (listener == null && Camera.main != null)
         {
             listener = Camera.main.transform;
+        }
+
+        if (waveManager == null)
+        {
+            waveManager = WaveManager.Instance != null
+                ? WaveManager.Instance
+                : FindAnyObjectByType<WaveManager>();
         }
     }
 
@@ -159,19 +205,55 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
         {
             seaTargetVolume = 0f;
             birdsTargetVolume = 0f;
+            underwaterTargetVolume = 0f;
+            IsListenerUnderwater = false;
             return;
         }
 
         Vector3 position = listener.position;
+        float underwaterPresence = 0f;
+        if (enableUnderwaterAudio)
+        {
+            underwaterPresence = SampleUnderwaterPresence(position);
+        }
+        else
+        {
+            IsListenerUnderwater = false;
+        }
+
         float seaPresence = enableSeaAudio ? SampleSeaPresence(position) : 0f;
         float forestPresence = enableBirdsAudio ? SampleForestPresence(position) : 0f;
 
         seaTargetVolume = Mathf.Clamp01(seaPresence) * seaMaxVolume;
         birdsTargetVolume = Mathf.Clamp01(forestPresence) * birdsMaxVolume;
+        underwaterTargetVolume = Mathf.Clamp01(underwaterPresence) * underwaterMaxVolume;
         if (birdsDuckingNearSea > 0f)
         {
             birdsTargetVolume *= 1f - Mathf.Clamp01(seaPresence) * birdsDuckingNearSea;
         }
+
+        if (underwaterPresence > 0f)
+        {
+            float underwaterAmount = Mathf.Clamp01(underwaterPresence);
+            seaTargetVolume *= 1f - underwaterAmount * seaDuckingUnderwater;
+            birdsTargetVolume *= 1f - underwaterAmount * birdsDuckingUnderwater;
+        }
+    }
+
+    private void PrepareUnderwaterSource()
+    {
+        if (underwaterSource == null && underwaterClip != null && Application.isPlaying)
+        {
+            underwaterSource = gameObject.AddComponent<AudioSource>();
+            underwaterSource.spatialBlend = 0f;
+        }
+
+        if (underwaterSource != null && underwaterClip != null)
+        {
+            underwaterSource.clip = underwaterClip;
+        }
+
+        PrepareSource(underwaterSource);
     }
 
     private float SampleSeaPresence(Vector3 position)
@@ -195,6 +277,51 @@ public sealed class ProceduralTerrainAmbientAudio : MonoBehaviour
         }
 
         return Smooth01(bestPresence);
+    }
+
+    private float SampleUnderwaterPresence(Vector3 position)
+    {
+        if (terrain == null || !terrain.IsWaterEnabled)
+        {
+            IsListenerUnderwater = false;
+            return 0f;
+        }
+
+        WaterSurfaceHeight = ResolveWaterSurfaceHeight(position);
+        IsListenerUnderwater = ShouldUseUnderwaterAudio(position.y, WaterSurfaceHeight, IsListenerUnderwater);
+        if (!IsListenerUnderwater)
+        {
+            return 0f;
+        }
+
+        if (underwaterFullVolumeDepth <= 0f)
+        {
+            return 1f;
+        }
+
+        float depth = WaterSurfaceHeight - position.y;
+        return Mathf.InverseLerp(-underwaterSurfaceHysteresis, underwaterFullVolumeDepth, depth);
+    }
+
+    private float ResolveWaterSurfaceHeight(Vector3 position)
+    {
+        float flatWaterHeight = terrain.WaterHeight;
+        if (useWaveManagerWaterHeight && waveManager != null)
+        {
+            return waveManager.GetHeight(position, flatWaterHeight);
+        }
+
+        return flatWaterHeight;
+    }
+
+    private bool ShouldUseUnderwaterAudio(float sampleY, float waterHeight, bool currentlyUnderwater)
+    {
+        if (currentlyUnderwater)
+        {
+            return sampleY <= waterHeight + underwaterSurfaceHysteresis;
+        }
+
+        return sampleY < waterHeight - underwaterSurfaceHysteresis;
     }
 
     private float SampleCurrentSeaPresence(Vector2 origin, float waterHeight)

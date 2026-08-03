@@ -74,20 +74,9 @@ public partial class InfinitMeshTerrain
             Material material,
             bool enableCollider,
             TerrainHeightLayer[] terrainLayers,
-            SlopeTextureSettings slopeTextureSettings,
-            BiomeSamplingSettings biomeSettings,
             bool applyGrass,
-            TreeSettingsSO treeSettings,
-            IReadOnlyList<TreeRenderPrototype> treeRenderPrototypes,
-            IReadOnlyList<TreeBiomeRenderData> treeBiomeData,
-            float globalTreeTotalDensity,
-            float maxTreeDensity,
-            bool useBiomeTreeSpawns,
-            bool shouldBuildTrees,
-            int terrainSeed,
-            float chunkSize,
-            bool enableWater,
-            float waterHeight)
+            bool captureTreeSurfaceData,
+            float chunkSize)
         {
             mesh.Clear();
             mesh.indexFormat = task.Vertices.Length > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
@@ -96,7 +85,7 @@ public partial class InfinitMeshTerrain
             mesh.SetUVs(0, task.Uvs);
             mesh.subMeshCount = 1;
             mesh.SetIndices(task.Indices, MeshTopology.Triangles, 0, true);
-            mesh.RecalculateBounds();
+            mesh.bounds = owner.CreateTerrainLocalBounds(chunkSize, true);
 
             SetMaterial(material);
             ApplySplatMaps(task, terrainLayers);
@@ -107,34 +96,32 @@ public partial class InfinitMeshTerrain
             CurrentLod = task.Lod;
             CurrentStitching = task.Stitching;
             HasMesh = true;
+            ClearTrees();
+            if (captureTreeSurfaceData)
+            {
+                CaptureTreeSurfaceData(task);
+            }
+            else
+            {
+                ClearTreeSurfaceData();
+            }
+
             SetColliderEnabled(enableCollider);
             if (task.HasGrassInstances && applyGrass)
             {
                 ApplyGrass(task);
             }
-
-            ApplyTrees(
-                task,
-                treeSettings,
-                treeRenderPrototypes,
-                treeBiomeData,
-                globalTreeTotalDensity,
-                maxTreeDensity,
-                useBiomeTreeSpawns,
-                shouldBuildTrees,
-                terrainSeed,
-                chunkSize,
-                enableWater,
-                waterHeight,
-                terrainLayers,
-                slopeTextureSettings,
-                biomeSettings);
         }
 
         public void SetMaterial(Material material)
         {
             meshRenderer.sharedMaterial = material;
             ApplyPropertyBlock();
+        }
+
+        public void SetShadowCastingMode(ShadowCastingMode mode)
+        {
+            meshRenderer.shadowCastingMode = mode;
         }
 
         public void ApplyTerrainLayerProperties(TerrainHeightLayer[] terrainLayers)
@@ -171,7 +158,7 @@ public partial class InfinitMeshTerrain
             colliderMesh.SetVertices(task.Vertices);
             colliderMesh.subMeshCount = 1;
             colliderMesh.SetIndices(task.Indices, MeshTopology.Triangles, 0, true);
-            colliderMesh.RecalculateBounds();
+            colliderMesh.bounds = owner.CreateTerrainLocalBounds(owner.ChunkSize, false);
 
             CurrentColliderLod = task.Lod;
             CurrentColliderVersion = task.TerrainVersion;
@@ -256,6 +243,7 @@ public partial class InfinitMeshTerrain
             ClearColliderMesh();
             ClearGrass();
             ClearTrees();
+            ClearTreeSurfaceData();
             DestroyBiomeLayerColorMaps();
             mesh.Clear();
             mesh.indexFormat = IndexFormat.UInt32;
@@ -277,6 +265,7 @@ public partial class InfinitMeshTerrain
         {
             ClearGrass();
             ClearTrees();
+            ClearTreeSurfaceData();
             DestroySplatMaps();
             DestroyBiomeLayerColorMaps();
 

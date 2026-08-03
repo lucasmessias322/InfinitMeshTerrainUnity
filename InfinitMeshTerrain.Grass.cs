@@ -542,29 +542,41 @@ public partial class InfinitMeshTerrain
 
         TerrainSettings terrainSettings = CreateTerrainSettings();
         float2 cellOrigin = GrassCellOrigin(coord, grassCellSize);
+        int heightMapResolution = GetHeightMapResolution(surfaceResolution);
 
-        GenerateTerrainVerticesJob surfaceJob = new GenerateTerrainVerticesJob
+        GenerateTerrainHeightMapJob heightMapJob = new GenerateTerrainHeightMapJob
         {
-            Vertices = task.Vertices,
-            Normals = task.Normals,
-            Uvs = task.Uvs,
+            Heights = task.Heights,
             Settings = terrainSettings,
             HeightLayers = task.HeightLayers,
             HeightSplineSamples = task.HeightSplineSamples,
             HeightLayerCount = task.HeightLayers.IsCreated ? task.HeightLayers.Length : 0,
             ChunkOrigin = cellOrigin,
             ChunkSize = grassCellSize,
-            SkirtDepth = 0f,
             Resolution = surfaceResolution,
-            BaseVertexCount = surfaceVertexCount,
+            HeightMapResolution = heightMapResolution,
             SegmentCount = surfaceResolution - 1,
             LodStep = 1,
-            WriteNormals = 1,
-            WriteUvs = 0,
             Stitching = default
         };
 
-        JobHandle surfaceHandle = surfaceJob.ScheduleParallel(surfaceVertexCount, 64, default);
+        JobHandle heightMapHandle = heightMapJob.ScheduleParallel(task.Heights.Length, 64, default);
+        GenerateTerrainVerticesJob surfaceJob = new GenerateTerrainVerticesJob
+        {
+            Heights = task.Heights,
+            Vertices = task.Vertices,
+            Normals = task.Normals,
+            Uvs = task.Uvs,
+            ChunkSize = grassCellSize,
+            SkirtDepth = 0f,
+            Resolution = surfaceResolution,
+            HeightMapResolution = heightMapResolution,
+            BaseVertexCount = surfaceVertexCount,
+            WriteNormals = 1,
+            WriteUvs = 0
+        };
+
+        JobHandle surfaceHandle = surfaceJob.ScheduleParallel(surfaceVertexCount, 64, heightMapHandle);
         if (useGpuGeneration)
         {
             task.Handle = surfaceHandle;

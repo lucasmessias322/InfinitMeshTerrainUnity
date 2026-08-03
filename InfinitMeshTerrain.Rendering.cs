@@ -15,6 +15,20 @@ public partial class InfinitMeshTerrain
         meshRenderer.allowOcclusionWhenDynamic = true;
     }
 
+    private Bounds CreateTerrainLocalBounds(float chunkSizeValue, bool includeSkirt)
+    {
+        TerrainSettings settings = CreateTerrainSettings();
+        float safeChunkSize = Mathf.Max(1f, chunkSizeValue);
+        float minY = settings.MinHeight - (includeSkirt ? Mathf.Max(0f, skirtDepth) : 0f);
+        float maxY = Mathf.Max(minY + 0.01f, settings.MaxHeight);
+        float height = maxY - minY;
+        const float verticalPadding = 2f;
+
+        return new Bounds(
+            new Vector3(safeChunkSize * 0.5f, (minY + maxY) * 0.5f, safeChunkSize * 0.5f),
+            new Vector3(safeChunkSize, height + verticalPadding * 2f, safeChunkSize));
+    }
+
     private void ApplyChunkMaterialToRuntimeChunks()
     {
         foreach (TerrainChunk chunk in chunks.Values)
@@ -22,6 +36,8 @@ public partial class InfinitMeshTerrain
             chunk.SetMaterial(chunkMaterial);
             chunk.ApplyTerrainLayerProperties(terrainLayers);
         }
+
+        ApplyChunkMaterialToFarHlodChunks();
     }
 
     private void ValidateTerrainLayers()

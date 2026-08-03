@@ -41,6 +41,7 @@ public partial class InfinitMeshTerrain
             lastViewerFramePosition = viewerPosition;
             hasLastViewerFramePosition = true;
             colliderMovementDirection = Vector2.zero;
+            terrainViewerSpeed = 0f;
             return;
         }
 
@@ -48,6 +49,12 @@ public partial class InfinitMeshTerrain
         lastViewerFramePosition = viewerPosition;
 
         Vector2 horizontalDelta = new Vector2(delta.x, delta.z);
+        terrainViewerSpeed = horizontalDelta.magnitude / Mathf.Max(Time.unscaledDeltaTime, 0.0001f);
+        if (lod0MaxViewerSpeed > 0f && terrainViewerSpeed > lod0MaxViewerSpeed)
+        {
+            lastFastLod0MoveTime = Time.unscaledTime;
+        }
+
         if (horizontalDelta.sqrMagnitude > 0.0001f)
         {
             colliderMovementDirection = horizontalDelta.normalized;
@@ -212,28 +219,40 @@ public partial class InfinitMeshTerrain
 
         float chunkSizeValue = ChunkSize;
         float2 chunkOrigin = new float2(coord.x * chunkSizeValue, coord.y * chunkSizeValue);
-        GenerateTerrainVerticesJob verticesJob = new GenerateTerrainVerticesJob
+        int heightMapResolution = GetHeightMapResolution(resolution);
+        GenerateTerrainHeightMapJob heightMapJob = new GenerateTerrainHeightMapJob
         {
-            Vertices = task.Vertices,
-            Normals = task.DummyNormals,
-            Uvs = task.DummyUvs,
+            Heights = task.Heights,
             Settings = CreateTerrainSettings(),
             HeightLayers = task.HeightLayers,
             HeightSplineSamples = task.HeightSplineSamples,
             HeightLayerCount = task.HeightLayers.IsCreated ? task.HeightLayers.Length : 0,
             ChunkOrigin = chunkOrigin,
             ChunkSize = chunkSizeValue,
-            SkirtDepth = 0f,
             Resolution = resolution,
-            BaseVertexCount = baseVertexCount,
+            HeightMapResolution = heightMapResolution,
             SegmentCount = segmentCount,
             LodStep = step,
-            WriteNormals = 0,
-            WriteUvs = 0,
             Stitching = stitching
         };
 
-        JobHandle verticesHandle = verticesJob.ScheduleParallel(baseVertexCount, 64, default);
+        JobHandle heightMapHandle = heightMapJob.ScheduleParallel(task.Heights.Length, 64, default);
+        GenerateTerrainVerticesJob verticesJob = new GenerateTerrainVerticesJob
+        {
+            Heights = task.Heights,
+            Vertices = task.Vertices,
+            Normals = task.DummyNormals,
+            Uvs = task.DummyUvs,
+            ChunkSize = chunkSizeValue,
+            SkirtDepth = 0f,
+            Resolution = resolution,
+            HeightMapResolution = heightMapResolution,
+            BaseVertexCount = baseVertexCount,
+            WriteNormals = 0,
+            WriteUvs = 0
+        };
+
+        JobHandle verticesHandle = verticesJob.ScheduleParallel(baseVertexCount, 64, heightMapHandle);
         task.Handle = JobHandle.CombineDependencies(verticesHandle, indexBuffer.Handle);
         return task;
     }

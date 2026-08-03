@@ -39,37 +39,179 @@ public partial class InfinitMeshTerrain
         return count;
     }
 
-    private int SelectLod(int distanceSqr)
+    private int SelectLod(Vector2Int coord, Vector3 viewerPosition, TerrainChunk chunk)
     {
-        if (maxLod <= 0 || viewDistanceInChunks <= 1)
+        if (maxLod <= 0)
         {
             return 0;
         }
 
-        float distance = Mathf.Sqrt(distanceSqr);
-        float normalized = distance / viewDistanceInChunks;
-        if (useGeomipmappingLod)
+        float distanceInChunks = GetViewerDistanceToChunkBoundsInChunks(coord, viewerPosition);
+        int rawLod = SelectRawLod(distanceInChunks);
+        int lod = chunk != null && chunk.HasMesh
+            ? ApplyLodHysteresis(rawLod, distanceInChunks, chunk.DesiredLod)
+            : rawLod;
+
+        return ApplyLod0Deferral(lod, chunk);
+    }
+
+    private int SelectRawLod(float distanceInChunks)
+    {
+        for (int lod = 0; lod < maxLod; lod++)
         {
-            int lod = Mathf.FloorToInt(normalized * (maxLod + 1));
-            return Mathf.Clamp(lod, 0, maxLod);
+            if (distanceInChunks <= GetLodDistanceBandInChunks(lod))
+            {
+                return lod;
+            }
         }
 
-        if (normalized < 0.24f)
+        return maxLod;
+    }
+
+    private int ApplyLodHysteresis(int rawLod, float distanceInChunks, int previousLod)
+    {
+        if (lodHysteresisInChunks <= 0f)
+        {
+            return rawLod;
+        }
+
+        int clampedPreviousLod = Mathf.Clamp(previousLod, 0, maxLod);
+        if (rawLod == clampedPreviousLod)
+        {
+            return rawLod;
+        }
+
+        float hysteresis = Mathf.Max(0f, lodHysteresisInChunks);
+        if (rawLod > clampedPreviousLod)
+        {
+            float leavePreviousDistance = GetLodUpperDistanceInChunks(clampedPreviousLod) + hysteresis;
+            return distanceInChunks <= leavePreviousDistance ? clampedPreviousLod : rawLod;
+        }
+
+        float enterRawDistance = Mathf.Max(0f, GetLodUpperDistanceInChunks(rawLod) - hysteresis);
+        return distanceInChunks > enterRawDistance ? clampedPreviousLod : rawLod;
+    }
+
+    private int ApplyLod0Deferral(int lod, TerrainChunk chunk)
+    {
+        if (lod != 0 || !ShouldDeferLod0Refinement())
+        {
+            return lod;
+        }
+
+        if (chunk != null && chunk.HasMesh && chunk.CurrentLod == 0)
         {
             return 0;
         }
 
-        if (normalized < 0.48f)
+        return Mathf.Min(1, maxLod);
+    }
+
+    private bool ShouldDeferLod0Refinement()
+    {
+        if (lod0MaxViewerSpeed <= 0f)
         {
-            return Mathf.Min(1, maxLod);
+            return false;
         }
 
-        if (normalized < 0.72f)
+        if (terrainViewerSpeed > lod0MaxViewerSpeed)
         {
-            return Mathf.Min(2, maxLod);
+            return true;
         }
 
-        return Mathf.Min(3, maxLod);
+        return Time.unscaledTime - lastFastLod0MoveTime < lod0SettleDelay;
+    }
+
+    private float GetLodUpperDistanceInChunks(int lod)
+    {
+        return lod >= maxLod ? float.PositiveInfinity : GetLodDistanceBandInChunks(lod);
+    }
+
+    private float GetViewerDistanceToChunkBoundsInChunks(Vector2Int coord, Vector3 viewerPosition)
+    {
+        float chunkSizeValue = ChunkSize;
+        float minX = coord.x * chunkSizeValue;
+        float maxX = minX + chunkSizeValue;
+        float minZ = coord.y * chunkSizeValue;
+        float maxZ = minZ + chunkSizeValue;
+        float dx = viewerPosition.x < minX
+            ? minX - viewerPosition.x
+            : viewerPosition.x > maxX
+                ? viewerPosition.x - maxX
+                : 0f;
+        float dz = viewerPosition.z < minZ
+            ? minZ - viewerPosition.z
+            : viewerPosition.z > maxZ
+                ? viewerPosition.z - maxZ
+                : 0f;
+
+        return Mathf.Sqrt(dx * dx + dz * dz) / chunkSizeValue;
+    }
+
+    private float GetLodDistanceBandInChunks(int lod)
+    {
+        if (lodDistanceBandsInChunks == null
+            || lod < 0
+            || lod >= lodDistanceBandsInChunks.Length)
+        {
+            return GetDefaultLodDistanceBandInChunks(lod);
+        }
+
+        return Mathf.Max(0f, lodDistanceBandsInChunks[lod]);
+    }
+
+    private void ValidateLodDistanceBands()
+    {
+        if (lodDistanceBandsInChunks == null || lodDistanceBandsInChunks.Length != MaxSupportedLod)
+        {
+            float[] resizedBands = new float[MaxSupportedLod];
+            for (int i = 0; i < resizedBands.Length; i++)
+            {
+                resizedBands[i] = lodDistanceBandsInChunks != null && i < lodDistanceBandsInChunks.Length
+                    ? lodDistanceBandsInChunks[i]
+                    : GetDefaultLodDistanceBandInChunks(i);
+            }
+
+            lodDistanceBandsInChunks = resizedBands;
+        }
+
+        float previousDistance = 0f;
+        for (int i = 0; i < lodDistanceBandsInChunks.Length; i++)
+        {
+            float distance = lodDistanceBandsInChunks[i];
+            if (float.IsNaN(distance) || float.IsInfinity(distance))
+            {
+                distance = GetDefaultLodDistanceBandInChunks(i);
+            }
+
+            distance = Mathf.Max(0f, distance);
+            if (i > 0)
+            {
+                distance = Mathf.Max(previousDistance, distance);
+            }
+
+            lodDistanceBandsInChunks[i] = distance;
+            previousDistance = distance;
+        }
+    }
+
+    private static float GetDefaultLodDistanceBandInChunks(int lod)
+    {
+        switch (lod)
+        {
+            case 0:
+                return 1.25f;
+            case 1:
+                return 3f;
+            case 2:
+                return 6f;
+            case 3:
+                return 10f;
+            case 4:
+                return 14f;
+            default:
+                return 14f;
+        }
     }
 
     private int GetLodStep(int lod)
