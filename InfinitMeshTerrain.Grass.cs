@@ -13,10 +13,10 @@ public partial class InfinitMeshTerrain
     private const string GrassComputeResourceName = "GrassInstanceGenerator";
     private const string GrassGenerateKernelName = "GenerateGrassInstances";
     private const string GrassFinalizeArgsKernelName = "FinalizeGrassArgs";
-    private const int GrassInstanceStride = 48;
+    private const int GrassInstanceStride = 64;
     private const int GrassSurfaceStride = 12;
     private const int GrassTerrainLayerStride = 12;
-    private const int GrassBiomeStride = 48;
+    private const int GrassBiomeStride = 64;
     private const int MaxGrassSurfaceResolution = 257;
     private static readonly int GrassInstancesPropertyId = Shader.PropertyToID("_GrassInstances");
     private static readonly int GrassViewerPositionPropertyId = Shader.PropertyToID("_ViewerPosition");
@@ -91,7 +91,8 @@ public partial class InfinitMeshTerrain
         new GrassBiomeData
         {
             DistanceRange = float4.zero,
-            GrassColor = new float4(1f, 1f, 1f, 1f),
+            GrassBaseColor = new float4(1f, 1f, 1f, 1f),
+            GrassTipColor = new float4(1f, 1f, 1f, 1f),
             GrassSettings = new float4(1f, 1f, 1f, 0f)
         }
     };
@@ -1750,7 +1751,8 @@ public partial class InfinitMeshTerrain
                         float yaw = Hash01(instanceHash + 0x1f83d9abu) * 6.2831855f;
                         float colorScale = 1f
                             + (Hash01(instanceHash + 0x5be0cd19u) * 2f - 1f) * biomeGrass.ColorVariation;
-                        float3 instanceColor = math.max(float3.zero, biomeGrass.GrassColor * colorScale);
+                        float3 instanceBaseColor = math.max(float3.zero, biomeGrass.GrassBaseColor * colorScale);
+                        float3 instanceTipColor = math.max(float3.zero, biomeGrass.GrassTipColor * colorScale);
                         float3 instanceNormal = math.normalize(math.lerp(new float3(0f, 1f, 0f), normalWS, Settings.NormalAlignment));
                         positionWS.y += Settings.SurfaceOffset;
 
@@ -1758,7 +1760,8 @@ public partial class InfinitMeshTerrain
                         {
                             PositionScale = new float4(positionWS, bladeHeight),
                             NormalYaw = new float4(instanceNormal, yaw),
-                            ColorWidth = new float4(instanceColor, bladeWidth)
+                            ColorWidth = new float4(instanceBaseColor, bladeWidth),
+                            TipColor = new float4(instanceTipColor, 1f)
                         };
 
                         float radius = math.max(bladeWidth, Settings.SurfaceOffset) * 1.5f;

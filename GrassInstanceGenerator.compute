@@ -6,6 +6,7 @@ struct GrassInstance
     float4 positionScale;
     float4 normalYaw;
     float4 colorWidth;
+    float4 tipColor;
 };
 
 struct GrassTerrainLayer
@@ -18,13 +19,15 @@ struct GrassTerrainLayer
 struct BiomeData
 {
     float4 distanceRange;
-    float4 grassColor;
+    float4 grassBaseColor;
+    float4 grassTipColor;
     float4 grassSettings;
 };
 
 struct BiomeGrassSample
 {
-    float3 grassColor;
+    float3 grassBaseColor;
+    float3 grassTipColor;
     float densityMultiplier;
     float bladeHeightMultiplier;
     float bladeWidthMultiplier;
@@ -470,7 +473,8 @@ int ResolveBiomeIndex(float2 worldXZ, float biomeDistance)
 BiomeGrassSample CreateDefaultBiomeGrassSample(float colorVariation)
 {
     BiomeGrassSample sample;
-    sample.grassColor = float3(1.0, 1.0, 1.0);
+    sample.grassBaseColor = float3(1.0, 1.0, 1.0);
+    sample.grassTipColor = float3(1.0, 1.0, 1.0);
     sample.densityMultiplier = 1.0;
     sample.bladeHeightMultiplier = 1.0;
     sample.bladeWidthMultiplier = 1.0;
@@ -481,7 +485,8 @@ BiomeGrassSample CreateDefaultBiomeGrassSample(float colorVariation)
 BiomeGrassSample CreateBiomeGrassSample(BiomeData biome)
 {
     BiomeGrassSample sample;
-    sample.grassColor = max(float3(0.0, 0.0, 0.0), biome.grassColor.rgb);
+    sample.grassBaseColor = max(float3(0.0, 0.0, 0.0), biome.grassBaseColor.rgb);
+    sample.grassTipColor = max(float3(0.0, 0.0, 0.0), biome.grassTipColor.rgb);
     sample.densityMultiplier = max(0.0, biome.grassSettings.x);
     sample.bladeHeightMultiplier = max(0.01, biome.grassSettings.y);
     sample.bladeWidthMultiplier = max(0.01, biome.grassSettings.z);
@@ -492,7 +497,8 @@ BiomeGrassSample CreateBiomeGrassSample(BiomeData biome)
 void BlendGrassBiomeColor(inout BiomeGrassSample sample, BiomeGrassSample secondarySample, float weight)
 {
     float blendWeight = saturate(weight);
-    sample.grassColor = lerp(sample.grassColor, secondarySample.grassColor, blendWeight);
+    sample.grassBaseColor = lerp(sample.grassBaseColor, secondarySample.grassBaseColor, blendWeight);
+    sample.grassTipColor = lerp(sample.grassTipColor, secondarySample.grassTipColor, blendWeight);
     sample.colorVariation = lerp(sample.colorVariation, secondarySample.colorVariation, blendWeight);
 }
 
@@ -575,7 +581,8 @@ void ApplySmoothBiomeGrassColor(
     }
 
     BiomeGrassSample colorSample = CreateBiomeGrassSample(_GrassBiomes[primaryIndex]);
-    sample.grassColor = colorSample.grassColor;
+    sample.grassBaseColor = colorSample.grassBaseColor;
+    sample.grassTipColor = colorSample.grassTipColor;
     sample.colorVariation = colorSample.colorVariation;
 
     int blendIndex = -1;
@@ -848,14 +855,16 @@ void GenerateGrassInstances(uint3 id : SV_DispatchThreadID)
             1.0 + (Hash01(instanceHash + 0x510e527fu) * 2.0 - 1.0) * _GrassBladeWidthVariation);
         float yaw = Hash01(instanceHash + 0x1f83d9abu) * 6.2831855;
         float colorScale = 1.0 + (Hash01(instanceHash + 0x5be0cd19u) * 2.0 - 1.0) * biomeGrass.colorVariation;
-        float3 instanceColor = max(float3(0.0, 0.0, 0.0), biomeGrass.grassColor * colorScale);
+        float3 instanceBaseColor = max(float3(0.0, 0.0, 0.0), biomeGrass.grassBaseColor * colorScale);
+        float3 instanceTipColor = max(float3(0.0, 0.0, 0.0), biomeGrass.grassTipColor * colorScale);
         float3 instanceNormal = normalize(lerp(float3(0.0, 1.0, 0.0), normalWS, _GrassNormalAlignment));
         positionWS.y += _GrassSurfaceOffset;
 
         GrassInstance instanceData;
         instanceData.positionScale = float4(positionWS, bladeHeight);
         instanceData.normalYaw = float4(instanceNormal, yaw);
-        instanceData.colorWidth = float4(instanceColor, bladeWidth);
+        instanceData.colorWidth = float4(instanceBaseColor, bladeWidth);
+        instanceData.tipColor = float4(instanceTipColor, 1.0);
         _GrassInstances[writeIndex] = instanceData;
     }
 }

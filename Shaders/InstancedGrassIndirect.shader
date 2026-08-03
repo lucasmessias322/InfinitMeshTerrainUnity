@@ -60,6 +60,7 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 float4 positionScale;
                 float4 normalYaw;
                 float4 colorWidth;
+                float4 tipColor;
             };
 
             StructuredBuffer<GrassInstance> _GrassInstances;
@@ -118,13 +119,14 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 float4 positionHCS : SV_POSITION;
                 float2 uv : TEXCOORD0;
                 half3 normalWS : TEXCOORD1;
-                half3 color : TEXCOORD2;
-                half fade : TEXCOORD3;
-                half fogFactor : TEXCOORD4;
-                float3 positionWS : TEXCOORD5;
-                half windColorMask : TEXCOORD6;
+                half3 baseColor : TEXCOORD2;
+                half3 tipColor : TEXCOORD3;
+                half fade : TEXCOORD4;
+                half fogFactor : TEXCOORD5;
+                float3 positionWS : TEXCOORD6;
+                half windColorMask : TEXCOORD7;
 #if (defined(_ADDITIONAL_LIGHTS) || defined(_ADDITIONAL_LIGHTS_VERTEX)) && !USE_CLUSTER_LIGHT_LOOP
-                half3 vertexLighting : TEXCOORD7;
+                half3 vertexLighting : TEXCOORD8;
 #endif
             };
 
@@ -338,7 +340,8 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 output.positionHCS = TransformWorldToHClip(positionWS);
                 output.uv = input.uv;
                 output.normalWS = half3(bentNormal);
-                output.color = half3(instanceData.colorWidth.rgb);
+                output.baseColor = half3(instanceData.colorWidth.rgb);
+                output.tipColor = half3(instanceData.tipColor.rgb);
                 output.fade = half(fade);
                 output.fogFactor = half(ComputeFogFactor(output.positionHCS.z));
                 output.positionWS = positionWS;
@@ -376,10 +379,13 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 additionalLighting += EvaluateAdditionalFragmentLights(inputData, normalWS);
 #endif
 
-                half3 bladeGradient = lerp(_BaseColor.rgb, _TipColor.rgb, input.uv.y);
-                half3 styledAlbedo = bladeGradient * input.color * lerp(half3(1.0, 1.0, 1.0), baseMap.rgb, textured);
-                half3 biomeAlbedo = BiomeGrassColorToAlbedo(input.color);
-                half3 biomeTexturedAlbedo = biomeAlbedo * lerp(half3(1.0, 1.0, 1.0), baseMap.rgb, textured);
+                half3 textureAlbedo = lerp(half3(1.0, 1.0, 1.0), baseMap.rgb, textured);
+                half3 styledBaseColor = _BaseColor.rgb * input.baseColor;
+                half3 styledTipColor = _TipColor.rgb * input.tipColor;
+                half3 styledAlbedo = lerp(styledBaseColor, styledTipColor, input.uv.y) * textureAlbedo;
+                half3 biomeBaseAlbedo = BiomeGrassColorToAlbedo(input.baseColor);
+                half3 biomeTipAlbedo = BiomeGrassColorToAlbedo(input.tipColor);
+                half3 biomeTexturedAlbedo = lerp(biomeBaseAlbedo, biomeTipAlbedo, input.uv.y) * textureAlbedo;
                 half3 albedo = lerp(styledAlbedo, biomeTexturedAlbedo, saturate(_UseBiomeGrassColor));
                 half windTipMask = lerp(half(1.0), saturate(input.uv.y), saturate(_WindColorTipBias));
                 albedo = lerp(albedo, _WindColor.rgb, input.windColorMask * windTipMask);

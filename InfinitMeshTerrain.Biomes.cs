@@ -416,7 +416,6 @@ public partial class InfinitMeshTerrain
     private static GrassBiomeData CreateBiomeData(TerrainBiomeSO biome, int biomeIndex)
     {
         biome.ValidateValues();
-        Color grassColor = biome.GrassColor;
         BiomeGrassSettings grass = biome.Grass;
         return new GrassBiomeData
         {
@@ -425,11 +424,8 @@ public partial class InfinitMeshTerrain
                 biome.MaxDistanceFromCenter,
                 biome.SelectionWeight,
                 biomeIndex),
-            GrassColor = new float4(
-                Mathf.Max(0f, grassColor.r),
-                Mathf.Max(0f, grassColor.g),
-                Mathf.Max(0f, grassColor.b),
-                Mathf.Clamp01(grassColor.a)),
+            GrassBaseColor = ToFloat4(biome.GrassBaseColor),
+            GrassTipColor = ToFloat4(biome.GrassTipColor),
             GrassSettings = new float4(
                 grass.DensityMultiplier,
                 grass.BladeHeightMultiplier,
@@ -500,7 +496,7 @@ public partial class InfinitMeshTerrain
         GrassBiomeData[] biomes,
         BiomeSamplingSettings settings)
     {
-        return EvaluateBiomeGrassSample(worldXZ, biomes, settings).GrassColor;
+        return EvaluateBiomeGrassSample(worldXZ, biomes, settings).GrassBaseColor;
     }
 
     private static GrassBiomeSample EvaluateBiomeGrassSample(
@@ -534,7 +530,7 @@ public partial class InfinitMeshTerrain
         NativeArray<GrassBiomeData> biomes,
         BiomeSamplingSettings settings)
     {
-        return EvaluateBiomeGrassSample(worldXZ, biomes, settings).GrassColor;
+        return EvaluateBiomeGrassSample(worldXZ, biomes, settings).GrassBaseColor;
     }
 
     private static GrassBiomeSample EvaluateBiomeGrassSample(
@@ -567,7 +563,8 @@ public partial class InfinitMeshTerrain
     {
         return new GrassBiomeSample
         {
-            GrassColor = new float3(1f, 1f, 1f),
+            GrassBaseColor = new float3(1f, 1f, 1f),
+            GrassTipColor = new float3(1f, 1f, 1f),
             DensityMultiplier = 1f,
             BladeHeightMultiplier = 1f,
             BladeWidthMultiplier = 1f,
@@ -579,7 +576,8 @@ public partial class InfinitMeshTerrain
     {
         return new GrassBiomeSample
         {
-            GrassColor = math.max(float3.zero, biome.GrassColor.xyz),
+            GrassBaseColor = math.max(float3.zero, biome.GrassBaseColor.xyz),
+            GrassTipColor = math.max(float3.zero, biome.GrassTipColor.xyz),
             DensityMultiplier = math.max(0f, biome.GrassSettings.x),
             BladeHeightMultiplier = math.max(0.01f, biome.GrassSettings.y),
             BladeWidthMultiplier = math.max(0.01f, biome.GrassSettings.z),
@@ -883,7 +881,8 @@ public partial class InfinitMeshTerrain
         }
 
         GrassBiomeSample colorSample = CreateGrassBiomeSample(biomes[colorPrimaryIndex]);
-        sample.GrassColor = colorSample.GrassColor;
+        sample.GrassBaseColor = colorSample.GrassBaseColor;
+        sample.GrassTipColor = colorSample.GrassTipColor;
         sample.ColorVariation = colorSample.ColorVariation;
         if (TryGetGrassBiomeColorBlend(
             colorSecondaryIndex,
@@ -925,7 +924,8 @@ public partial class InfinitMeshTerrain
         }
 
         GrassBiomeSample colorSample = CreateGrassBiomeSample(biomes[colorPrimaryIndex]);
-        sample.GrassColor = colorSample.GrassColor;
+        sample.GrassBaseColor = colorSample.GrassBaseColor;
+        sample.GrassTipColor = colorSample.GrassTipColor;
         sample.ColorVariation = colorSample.ColorVariation;
         if (TryGetGrassBiomeColorBlend(
             colorSecondaryIndex,
@@ -995,7 +995,8 @@ public partial class InfinitMeshTerrain
         float weight)
     {
         float blendWeight = math.saturate(weight);
-        sample.GrassColor = math.lerp(sample.GrassColor, secondarySample.GrassColor, blendWeight);
+        sample.GrassBaseColor = math.lerp(sample.GrassBaseColor, secondarySample.GrassBaseColor, blendWeight);
+        sample.GrassTipColor = math.lerp(sample.GrassTipColor, secondarySample.GrassTipColor, blendWeight);
         sample.ColorVariation = math.lerp(sample.ColorVariation, secondarySample.ColorVariation, blendWeight);
     }
 

@@ -146,6 +146,7 @@ public partial class InfinitMeshTerrain
         public float4 PositionScale;
         public float4 NormalYaw;
         public float4 ColorWidth;
+        public float4 TipColor;
     }
 
     private struct GrassTerrainLayerData
@@ -179,13 +180,15 @@ public partial class InfinitMeshTerrain
     private struct GrassBiomeData
     {
         public float4 DistanceRange;
-        public float4 GrassColor;
+        public float4 GrassBaseColor;
+        public float4 GrassTipColor;
         public float4 GrassSettings;
     }
 
     private struct GrassBiomeSample
     {
-        public float3 GrassColor;
+        public float3 GrassBaseColor;
+        public float3 GrassTipColor;
         public float DensityMultiplier;
         public float BladeHeightMultiplier;
         public float BladeWidthMultiplier;
