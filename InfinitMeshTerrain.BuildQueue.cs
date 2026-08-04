@@ -218,6 +218,8 @@ public partial class InfinitMeshTerrain
         JobHandle grassHandle = default;
         if (task.HasGrassInstances)
         {
+            GrassBuildSettings grassBuildSettings = CreateGrassBuildSettings();
+            task.GrassPackedWidthScale = grassBuildSettings.PackedWidthScale;
             GenerateGrassInstancesJob grassJob = new GenerateGrassInstancesJob
             {
                 Vertices = task.Vertices,
@@ -226,7 +228,7 @@ public partial class InfinitMeshTerrain
                 GrassInstances = task.GrassInstances,
                 GrassInstanceCounter = task.GrassInstanceCounter,
                 GrassBounds = task.GrassBounds,
-                Settings = CreateGrassBuildSettings(),
+                Settings = grassBuildSettings,
                 SlopeTextureSettings = slopeTextureSettings,
                 ChunkCoord = new int2(coord.x, coord.y),
                 ChunkOrigin = chunkOrigin,

@@ -58,9 +58,7 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
             struct GrassInstance
             {
                 float4 positionScale;
-                float4 normalYaw;
-                float4 colorWidth;
-                float4 tipColor;
+                uint4 packed;
             };
 
             StructuredBuffer<GrassInstance> _GrassInstances;
@@ -94,6 +92,38 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
             float4 _MeshGrounding;
             float4 _Trample;
             float3 _TramplePosition;
+            float _GrassPackedWidthScale;
+
+            float UnpackGrassUnorm8(uint packed)
+            {
+                return (float)(packed & 255u) * (1.0 / 255.0);
+            }
+
+            half3 UnpackGrassColor(uint packed)
+            {
+                return half3(
+                    half(UnpackGrassUnorm8(packed)),
+                    half(UnpackGrassUnorm8(packed >> 8)),
+                    half(UnpackGrassUnorm8(packed >> 16)));
+            }
+
+            float UnpackGrassWidth(uint packedColorWidth)
+            {
+                return max(0.01, UnpackGrassUnorm8(packedColorWidth >> 24) * max(_GrassPackedWidthScale, 0.01));
+            }
+
+            float3 UnpackGrassNormal(uint packedNormalYaw)
+            {
+                float normalX = UnpackGrassUnorm8(packedNormalYaw) * 2.0 - 1.0;
+                float normalZ = UnpackGrassUnorm8(packedNormalYaw >> 8) * 2.0 - 1.0;
+                float normalY = sqrt(saturate(1.0 - normalX * normalX - normalZ * normalZ));
+                return normalize(float3(normalX, normalY, normalZ) + float3(0.0001, 0.0001, 0.0001));
+            }
+
+            float UnpackGrassYaw(uint packedNormalYaw)
+            {
+                return (float)((packedNormalYaw >> 16) & 65535u) * (6.2831855 / 65535.0);
+            }
 
             half3 BiomeGrassColorToAlbedo(half3 color)
             {
@@ -286,12 +316,15 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
 
                 float3 origin = instanceData.positionScale.xyz;
                 float height = max(0.01, instanceData.positionScale.w);
-                float width = max(0.01, instanceData.colorWidth.w);
-                float3 terrainNormal = normalize(instanceData.normalYaw.xyz + float3(0.0001, 0.0001, 0.0001));
+                float width = UnpackGrassWidth(instanceData.packed.y);
+                float3 terrainNormal = UnpackGrassNormal(instanceData.packed.x);
+                float yaw = UnpackGrassYaw(instanceData.packed.x);
+                half3 instanceBaseColor = UnpackGrassColor(instanceData.packed.y);
+                half3 instanceTipColor = UnpackGrassColor(instanceData.packed.z);
 
                 float yawSin;
                 float yawCos;
-                sincos(instanceData.normalYaw.w, yawSin, yawCos);
+                sincos(yaw, yawSin, yawCos);
 
                 float3 yawForward = normalize(float3(yawSin, 0.0, yawCos));
                 float3 tangent = normalize(cross(terrainNormal, yawForward) + float3(0.0001, 0.0, 0.0001));
@@ -299,7 +332,7 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
 
                 float swayMask = saturate(input.uv.y);
                 float2 windPlanar = normalize(_Wind.xy + float2(0.0001, 0.0001));
-                float phase = dot(origin.xz, float2(0.071, 0.047)) + _Time.y * _Wind.w + instanceData.normalYaw.w;
+                float phase = dot(origin.xz, float2(0.071, 0.047)) + _Time.y * _Wind.w + yaw;
                 float gust = sin(phase) * 0.65 + sin(phase * 2.17) * 0.35;
                 half windWaveMask = EvaluateGrassWindWaveMask(origin.xz);
                 float waveGust = (float)windWaveMask * max((float)_WindWaveMovementStrength, 0.0);
@@ -340,8 +373,8 @@ Shader "InfinitMeshTerrain/Instanced Grass Indirect"
                 output.positionHCS = TransformWorldToHClip(positionWS);
                 output.uv = input.uv;
                 output.normalWS = half3(bentNormal);
-                output.baseColor = half3(instanceData.colorWidth.rgb);
-                output.tipColor = half3(instanceData.tipColor.rgb);
+                output.baseColor = instanceBaseColor;
+                output.tipColor = instanceTipColor;
                 output.fade = half(fade);
                 output.fogFactor = half(ComputeFogFactor(output.positionHCS.z));
                 output.positionWS = positionWS;

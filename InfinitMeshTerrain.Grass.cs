@@ -13,19 +13,35 @@ public partial class InfinitMeshTerrain
     private const string GrassComputeResourceName = "GrassInstanceGenerator";
     private const string GrassGenerateKernelName = "GenerateGrassInstances";
     private const string GrassFinalizeArgsKernelName = "FinalizeGrassArgs";
-    private const int GrassInstanceStride = 64;
+    private const string GrassPrepareCullArgsKernelName = "PrepareGrassCullArgs";
+    private const string GrassCullKernelName = "CullGrassInstances";
+    private const string GrassCopyToClusterKernelName = "CopyGrassInstancesToCluster";
+    private const string GrassCullClusterKernelName = "CullGrassClusterInstances";
+    private const int GrassInstanceStride = 32;
     private const int GrassSurfaceStride = 12;
     private const int GrassTerrainLayerStride = 12;
     private const int GrassBiomeStride = 64;
     private const int MaxGrassSurfaceResolution = 257;
+    private const int GrassCullThreadGroupSize = 64;
     private static readonly int GrassInstancesPropertyId = Shader.PropertyToID("_GrassInstances");
+    private static readonly int GrassVisibleInstancesPropertyId = Shader.PropertyToID("_GrassVisibleInstances");
+    private static readonly int GrassClusterInstancesPropertyId = Shader.PropertyToID("_GrassClusterInstances");
+    private static readonly int GrassClusterCellCountsPropertyId = Shader.PropertyToID("_GrassClusterCellCounts");
+    private static readonly int GrassClusterCellIndexPropertyId = Shader.PropertyToID("_GrassClusterCellIndex");
+    private static readonly int GrassClusterCellCapacityPropertyId = Shader.PropertyToID("_GrassClusterCellCapacity");
+    private static readonly int GrassClusterCellCountPropertyId = Shader.PropertyToID("_GrassClusterCellCount");
+    private static readonly int GrassClusterCapacityPropertyId = Shader.PropertyToID("_GrassClusterCapacity");
+    private static readonly int GrassClusterWriteOffsetPropertyId = Shader.PropertyToID("_GrassClusterWriteOffset");
     private static readonly int GrassViewerPositionPropertyId = Shader.PropertyToID("_ViewerPosition");
     private static readonly int GrassFadeDistancesPropertyId = Shader.PropertyToID("_FadeDistances");
+    private static readonly int GrassFrustumPlanesPropertyId = Shader.PropertyToID("_GrassFrustumPlanes");
+    private static readonly int GrassFrustumCullingEnabledPropertyId = Shader.PropertyToID("_GrassFrustumCullingEnabled");
     private static readonly int GrassWindPropertyId = Shader.PropertyToID("_Wind");
     private static readonly int GrassMeshGroundingPropertyId = Shader.PropertyToID("_MeshGrounding");
     private static readonly int GrassTramplePropertyId = Shader.PropertyToID("_Trample");
     private static readonly int GrassTramplePositionPropertyId = Shader.PropertyToID("_TramplePosition");
     private static readonly int GrassUseBiomeGrassColorPropertyId = Shader.PropertyToID("_UseBiomeGrassColor");
+    private static readonly int GrassPackedWidthScalePropertyId = Shader.PropertyToID("_GrassPackedWidthScale");
     private static readonly int GrassSurfaceVerticesPropertyId = Shader.PropertyToID("_GrassSurfaceVertices");
     private static readonly int GrassSurfaceNormalsPropertyId = Shader.PropertyToID("_GrassSurfaceNormals");
     private static readonly int GrassTerrainLayersPropertyId = Shader.PropertyToID("_GrassTerrainLayers");
@@ -60,10 +76,7 @@ public partial class InfinitMeshTerrain
     private static readonly int GrassMinSlopeAnglePropertyId = Shader.PropertyToID("_GrassMinSlopeAngle");
     private static readonly int GrassMaxSlopeAnglePropertyId = Shader.PropertyToID("_GrassMaxSlopeAngle");
     private static readonly int GrassSlopeFadeRangePropertyId = Shader.PropertyToID("_GrassSlopeFadeRange");
-    private static readonly int GrassBladeHeightPropertyId = Shader.PropertyToID("_GrassBladeHeight");
-    private static readonly int GrassBladeHeightVariationPropertyId = Shader.PropertyToID("_GrassBladeHeightVariation");
-    private static readonly int GrassBladeWidthPropertyId = Shader.PropertyToID("_GrassBladeWidth");
-    private static readonly int GrassBladeWidthVariationPropertyId = Shader.PropertyToID("_GrassBladeWidthVariation");
+    private static readonly int GrassBladeSizeRangePropertyId = Shader.PropertyToID("_GrassBladeSizeRange");
     private static readonly int GrassColorVariationPropertyId = Shader.PropertyToID("_GrassColorVariation");
     private static readonly int GrassNormalAlignmentPropertyId = Shader.PropertyToID("_GrassNormalAlignment");
     private static readonly int GrassSurfaceOffsetPropertyId = Shader.PropertyToID("_GrassSurfaceOffset");
@@ -111,25 +124,32 @@ public partial class InfinitMeshTerrain
     [SerializeField, Min(1)] private int maxGrassUploadInstancesPerFrame = 8192;
     [SerializeField, Min(1)] private int maxGrassBuildRequestsPerFrame = 2;
     [SerializeField, Min(1)] private int maxConcurrentGrassBuildTasks = 2;
+    [Tooltip("Number of grass streaming cells grouped per axis into one render buffer. 4 means a 4x4 cell cluster.")]
+    [SerializeField, Range(1, 8)] private int grassRenderClusterSize = 4;
 
     private Mesh runtimeGrassMesh;
     private Material runtimeGrassMaterial;
     private ComputeShader runtimeGrassInstanceComputeShader;
     private GrassSettingsSO runtimeDefaultGrassSettings;
     private readonly Dictionary<Vector2Int, GrassCell> grassCells = new Dictionary<Vector2Int, GrassCell>();
+    private readonly Dictionary<Vector2Int, GrassRenderCluster> grassRenderClusters = new Dictionary<Vector2Int, GrassRenderCluster>();
     private readonly Dictionary<Vector2Int, GrassBuildTask> runningGrassTasks = new Dictionary<Vector2Int, GrassBuildTask>();
     private readonly Queue<Vector2Int> grassBuildQueue = new Queue<Vector2Int>();
     private readonly HashSet<Vector2Int> queuedGrassCells = new HashSet<Vector2Int>();
     private readonly HashSet<Vector2Int> visibleGrassCellCoords = new HashSet<Vector2Int>();
+    private readonly HashSet<Vector2Int> visibleGrassClusterCoords = new HashSet<Vector2Int>();
     private readonly List<Vector2Int> grassRemovalBuffer = new List<Vector2Int>();
     private readonly List<Vector2Int> completedGrassTaskBuffer = new List<Vector2Int>();
     private readonly List<ChunkCandidate> grassVisibilityCandidateBuffer = new List<ChunkCandidate>();
     private readonly List<ChunkCandidate> grassBuildCandidateBuffer = new List<ChunkCandidate>();
     private readonly List<ChunkCandidate> grassUploadCandidateBuffer = new List<ChunkCandidate>();
+    private readonly Plane[] grassFrustumPlanes = new Plane[6];
+    private readonly Vector4[] grassFrustumPlaneVectors = new Vector4[6];
     private Vector3 lastGrassViewerPosition;
     private Vector2Int completedGrassTaskSortOrigin;
     private float grassViewerSpeed;
     private float lastFastGrassMoveTime = float.NegativeInfinity;
+    private int activeGrassRenderClusterSize;
     private bool hasGrassViewerMotionSample;
 
     private void ValidateGrassSettings()
@@ -139,6 +159,7 @@ public partial class InfinitMeshTerrain
         maxGrassUploadInstancesPerFrame = Mathf.Max(1, maxGrassUploadInstancesPerFrame);
         maxGrassBuildRequestsPerFrame = Mathf.Max(1, maxGrassBuildRequestsPerFrame);
         maxConcurrentGrassBuildTasks = Mathf.Max(1, maxConcurrentGrassBuildTasks);
+        grassRenderClusterSize = Mathf.Clamp(grassRenderClusterSize, 1, 8);
 
         if (grassSettings != null)
         {
@@ -171,6 +192,40 @@ public partial class InfinitMeshTerrain
         generateKernel = shader.FindKernel(GrassGenerateKernelName);
         finalizeArgsKernel = shader.FindKernel(GrassFinalizeArgsKernelName);
         return generateKernel >= 0 && finalizeArgsKernel >= 0;
+    }
+
+    private static bool TryGetGrassCullingKernels(ComputeShader shader, out int prepareCullKernel, out int cullKernel)
+    {
+        prepareCullKernel = -1;
+        cullKernel = -1;
+
+        if (shader == null
+            || !shader.HasKernel(GrassPrepareCullArgsKernelName)
+            || !shader.HasKernel(GrassCullKernelName))
+        {
+            return false;
+        }
+
+        prepareCullKernel = shader.FindKernel(GrassPrepareCullArgsKernelName);
+        cullKernel = shader.FindKernel(GrassCullKernelName);
+        return prepareCullKernel >= 0 && cullKernel >= 0;
+    }
+
+    private static bool TryGetGrassClusterKernels(ComputeShader shader, out int copyKernel, out int clusterCullKernel)
+    {
+        copyKernel = -1;
+        clusterCullKernel = -1;
+
+        if (shader == null
+            || !shader.HasKernel(GrassCopyToClusterKernelName)
+            || !shader.HasKernel(GrassCullClusterKernelName))
+        {
+            return false;
+        }
+
+        copyKernel = shader.FindKernel(GrassCopyToClusterKernelName);
+        clusterCullKernel = shader.FindKernel(GrassCullClusterKernelName);
+        return copyKernel >= 0 && clusterCullKernel >= 0;
     }
 
     private ComputeShader GetRuntimeGrassInstanceComputeShader()
@@ -229,6 +284,30 @@ public partial class InfinitMeshTerrain
         }
 
         return Time.unscaledTime - lastFastGrassMoveTime < grassUploadSettleDelay;
+    }
+
+    private bool TryUpdateGrassFrustumPlanes()
+    {
+        Camera cullingCamera = viewer != null ? viewer.GetComponent<Camera>() : null;
+        if (cullingCamera == null)
+        {
+            cullingCamera = Camera.main;
+        }
+
+        if (cullingCamera == null)
+        {
+            return false;
+        }
+
+        GeometryUtility.CalculateFrustumPlanes(cullingCamera, grassFrustumPlanes);
+        for (int i = 0; i < grassFrustumPlanes.Length; i++)
+        {
+            Plane plane = grassFrustumPlanes[i];
+            Vector3 normal = plane.normal;
+            grassFrustumPlaneVectors[i] = new Vector4(normal.x, normal.y, normal.z, plane.distance);
+        }
+
+        return true;
     }
 
     private void ProcessQueuedGrassUploads()
@@ -296,6 +375,12 @@ public partial class InfinitMeshTerrain
         drawMaterial.enableInstancing = true;
 
         TryGetGrassComputeShader(out ComputeShader grassComputeShader, out _, out int finalizeArgsKernel);
+        bool hasGrassCullingKernels = TryGetGrassCullingKernels(grassComputeShader, out int prepareCullArgsKernel, out int cullKernel);
+        int copyClusterKernel = -1;
+        int clusterCullKernel = -1;
+        bool useClusterRendering = hasGrassCullingKernels
+            && TryGetGrassClusterKernels(grassComputeShader, out copyClusterKernel, out clusterCullKernel);
+        bool useFrustumCulling = TryUpdateGrassFrustumPlanes();
         Vector2 windDirection = settings.WindDirection.sqrMagnitude > 0.0001f
             ? settings.WindDirection.normalized
             : Vector2.right;
@@ -309,6 +394,23 @@ public partial class InfinitMeshTerrain
         bool deferGrassStreaming = ShouldDeferGrassStreaming();
         float grassCellSize = GetGrassStreamingCellSize(settings);
         Vector2Int viewerCell = WorldToGrassCellCoord(viewer.position, grassCellSize);
+        int clusterSize = GetGrassRenderClusterSize();
+        int grassClusterCellCapacity = useClusterRendering ? CalculateGrassInstanceCapacity(grassCellSize) : 0;
+        if (useClusterRendering)
+        {
+            if (activeGrassRenderClusterSize != clusterSize)
+            {
+                ClearGrassRenderClusters();
+                activeGrassRenderClusterSize = clusterSize;
+            }
+
+            visibleGrassClusterCoords.Clear();
+        }
+        else if (grassRenderClusters.Count > 0)
+        {
+            ClearGrassRenderClusters();
+        }
+
         grassBuildCandidateBuffer.Clear();
 
         foreach (Vector2Int coord in visibleGrassCellCoords)
@@ -328,6 +430,18 @@ public partial class InfinitMeshTerrain
                 continue;
             }
 
+            if (useClusterRendering)
+            {
+                QueueGrassCellForClusterRender(
+                    coord,
+                    cell,
+                    clusterSize,
+                    grassClusterCellCapacity,
+                    grassComputeShader,
+                    copyClusterKernel);
+                continue;
+            }
+
             cell.DrawGrass(
                 drawMesh,
                 drawMaterial,
@@ -342,7 +456,43 @@ public partial class InfinitMeshTerrain
                 layer,
                 useBiomeGrassColor,
                 grassComputeShader,
-                finalizeArgsKernel);
+                finalizeArgsKernel,
+                prepareCullArgsKernel,
+                cullKernel,
+                useFrustumCulling,
+                grassFrustumPlanes,
+                grassFrustumPlaneVectors);
+        }
+
+        if (useClusterRendering)
+        {
+            foreach (Vector2Int coord in visibleGrassClusterCoords)
+            {
+                if (!grassRenderClusters.TryGetValue(coord, out GrassRenderCluster cluster))
+                {
+                    continue;
+                }
+
+                cluster.DrawGrass(
+                    drawMesh,
+                    drawMaterial,
+                    viewer.position,
+                    fadeDistances,
+                    wind,
+                    meshGrounding,
+                    trample,
+                    tramplePosition,
+                    settings.ShadowCastingMode,
+                    settings.ReceiveShadows,
+                    layer,
+                    useBiomeGrassColor,
+                    grassComputeShader,
+                    prepareCullArgsKernel,
+                    clusterCullKernel,
+                    useFrustumCulling,
+                    grassFrustumPlanes,
+                    grassFrustumPlaneVectors);
+            }
         }
 
         if (deferGrassStreaming || grassBuildCandidateBuffer.Count == 0)
@@ -509,6 +659,7 @@ public partial class InfinitMeshTerrain
             if (grassInstanceCapacity <= 0)
             {
                 cell.ApplyEmpty();
+                ClearGrassClusterSlot(coord);
                 continue;
             }
 
@@ -525,6 +676,7 @@ public partial class InfinitMeshTerrain
         int heightSplineSampleCount = GetTerrainSplineSampleCount();
         int grassTerrainLayerCount = grassInstanceCapacity > 0 ? GetGrassTerrainLayerCount() : 0;
         int grassBiomeCount = grassInstanceCapacity > 0 ? GetTerrainBiomeCount() : 0;
+        GrassBuildSettings grassBuildSettings = CreateGrassBuildSettings();
 
         GrassBuildTask task = new GrassBuildTask(
             coord,
@@ -536,7 +688,8 @@ public partial class InfinitMeshTerrain
             grassInstanceCapacity,
             grassTerrainLayerCount,
             grassBiomeCount,
-            useGpuGeneration);
+            useGpuGeneration,
+            grassBuildSettings.PackedWidthScale);
         CopyTerrainHeightLayers(task.HeightLayers, task.HeightSplineSamples);
         CopyGrassTerrainLayers(task.GrassTerrainLayers);
         CopyBiomeData(task.GrassBiomes);
@@ -593,7 +746,7 @@ public partial class InfinitMeshTerrain
             GrassInstances = task.GrassInstances,
             GrassInstanceCounter = task.GrassInstanceCounter,
             GrassBounds = task.GrassBounds,
-            Settings = CreateGrassBuildSettings(),
+            Settings = grassBuildSettings,
             BiomeSettings = CreateBiomeSamplingSettings(),
             SlopeTextureSettings = CreateSlopeTextureSettings(),
             ChunkCoord = new int2(coord.x, coord.y),
@@ -670,12 +823,18 @@ public partial class InfinitMeshTerrain
         if (!task.UseGpuGeneration)
         {
             cell.Apply(task);
+            if (!cell.CanSyncToCluster)
+            {
+                ClearGrassClusterSlot(coord);
+            }
+
             return;
         }
 
         if (!TryGetGrassComputeShader(out ComputeShader shader, out int generateKernel, out int finalizeArgsKernel))
         {
             cell.ClearGrass();
+            ClearGrassClusterSlot(coord);
             RequestGrassBuild(coord);
             return;
         }
@@ -685,6 +844,7 @@ public partial class InfinitMeshTerrain
         if (drawMesh == null)
         {
             cell.ApplyEmpty();
+            ClearGrassClusterSlot(coord);
             return;
         }
 
@@ -700,6 +860,7 @@ public partial class InfinitMeshTerrain
         if (!applied)
         {
             cell.ApplyEmpty();
+            ClearGrassClusterSlot(coord);
         }
     }
 
@@ -763,9 +924,82 @@ public partial class InfinitMeshTerrain
         completedGrassTaskBuffer.Clear();
     }
 
+    private void QueueGrassCellForClusterRender(
+        Vector2Int coord,
+        GrassCell cell,
+        int clusterSize,
+        int grassClusterCellCapacity,
+        ComputeShader shader,
+        int copyClusterKernel)
+    {
+        Vector2Int clusterCoord = GetGrassClusterCoord(coord, clusterSize);
+        int clusterSlot = GetGrassClusterSlot(coord, clusterSize);
+        GrassRenderCluster cluster = GetOrCreateGrassRenderCluster(clusterCoord, clusterSize);
+        visibleGrassClusterCoords.Add(clusterCoord);
+
+        if (!cell.CanSyncToCluster)
+        {
+            cluster.ClearSlot(clusterSlot);
+            return;
+        }
+
+        if (!cell.NeedsClusterSync && cluster.HasSlot(clusterSlot))
+        {
+            return;
+        }
+
+        cluster.SyncCell(clusterSlot, cell, grassClusterCellCapacity, shader, copyClusterKernel);
+    }
+
+    private GrassRenderCluster GetOrCreateGrassRenderCluster(Vector2Int coord, int clusterSize)
+    {
+        if (!grassRenderClusters.TryGetValue(coord, out GrassRenderCluster cluster))
+        {
+            cluster = new GrassRenderCluster(coord, clusterSize);
+            grassRenderClusters.Add(coord, cluster);
+        }
+
+        return cluster;
+    }
+
+    private void ClearGrassClusterSlot(Vector2Int coord)
+    {
+        int clusterSize = activeGrassRenderClusterSize > 0
+            ? activeGrassRenderClusterSize
+            : GetGrassRenderClusterSize();
+        Vector2Int clusterCoord = GetGrassClusterCoord(coord, clusterSize);
+        if (!grassRenderClusters.TryGetValue(clusterCoord, out GrassRenderCluster cluster))
+        {
+            return;
+        }
+
+        cluster.ClearSlot(GetGrassClusterSlot(coord, clusterSize));
+        if (!cluster.IsEmpty)
+        {
+            return;
+        }
+
+        cluster.Dispose();
+        grassRenderClusters.Remove(clusterCoord);
+        visibleGrassClusterCoords.Remove(clusterCoord);
+    }
+
+    private void ClearGrassRenderClusters()
+    {
+        foreach (GrassRenderCluster cluster in grassRenderClusters.Values)
+        {
+            cluster.Dispose();
+        }
+
+        grassRenderClusters.Clear();
+        visibleGrassClusterCoords.Clear();
+        activeGrassRenderClusterSize = 0;
+    }
+
     private void RemoveGrassCell(Vector2Int coord)
     {
         queuedGrassCells.Remove(coord);
+        ClearGrassClusterSlot(coord);
 
         if (!grassCells.TryGetValue(coord, out GrassCell cell))
         {
@@ -786,6 +1020,7 @@ public partial class InfinitMeshTerrain
         }
 
         grassCells.Clear();
+        ClearGrassRenderClusters();
         visibleGrassCellCoords.Clear();
         grassRemovalBuffer.Clear();
         grassVisibilityCandidateBuffer.Clear();
@@ -828,6 +1063,33 @@ public partial class InfinitMeshTerrain
         return new float2(coord.x * grassCellSize, coord.y * grassCellSize);
     }
 
+    private int GetGrassRenderClusterSize()
+    {
+        return Mathf.Clamp(grassRenderClusterSize, 1, 8);
+    }
+
+    private static Vector2Int GetGrassClusterCoord(Vector2Int cellCoord, int clusterSize)
+    {
+        int size = Mathf.Max(1, clusterSize);
+        return new Vector2Int(
+            FloorDiv(cellCoord.x, size),
+            FloorDiv(cellCoord.y, size));
+    }
+
+    private static int GetGrassClusterSlot(Vector2Int cellCoord, int clusterSize)
+    {
+        int size = Mathf.Max(1, clusterSize);
+        int localX = PositiveMod(cellCoord.x, size);
+        int localZ = PositiveMod(cellCoord.y, size);
+        return localZ * size + localX;
+    }
+
+    private static int PositiveMod(int value, int divisor)
+    {
+        int result = value % divisor;
+        return result < 0 ? result + divisor : result;
+    }
+
     private GrassBuildSettings CreateGrassBuildSettings()
     {
         GrassSettingsSO settings = GetGrassSettings();
@@ -840,6 +1102,8 @@ public partial class InfinitMeshTerrain
             out float densityCapacityMultiplier,
             out float bladeHeightCapacityMultiplier,
             out float bladeWidthCapacityMultiplier);
+        float maxBiomeBladeWidthMultiplier = Mathf.Max(1f, bladeWidthCapacityMultiplier);
+        float packedWidthScale = Mathf.Max(0.01f, settings.MaxBladeWidth * maxBiomeBladeWidthMultiplier);
 
         float minHeight = settings.MinHeight;
         if (settings.AvoidWater && enableWater)
@@ -867,18 +1131,19 @@ public partial class InfinitMeshTerrain
             MinSlopeAngle = settings.MinSlopeAngle,
             MaxSlopeAngle = settings.MaxSlopeAngle,
             SlopeFadeRange = settings.SlopeFadeRange,
-            BladeHeight = settings.BladeHeight,
-            BladeHeightVariation = settings.BladeHeightVariation,
-            BladeWidth = settings.BladeWidth,
-            BladeWidthVariation = settings.BladeWidthVariation,
+            MinBladeHeight = settings.MinBladeHeight,
+            MaxBladeHeight = settings.MaxBladeHeight,
+            MinBladeWidth = settings.MinBladeWidth,
+            MaxBladeWidth = settings.MaxBladeWidth,
             ColorVariation = settings.ColorVariation,
             MaxBiomeDensityMultiplier = densityCapacityMultiplier,
             MaxBiomeBladeHeightMultiplier = Mathf.Max(1f, bladeHeightCapacityMultiplier),
-            MaxBiomeBladeWidthMultiplier = Mathf.Max(1f, bladeWidthCapacityMultiplier),
+            MaxBiomeBladeWidthMultiplier = maxBiomeBladeWidthMultiplier,
             NormalAlignment = settings.NormalAlignment,
             SurfaceOffset = settings.SurfaceOffset,
             CoverageNoiseFrequency = settings.CoverageNoiseFrequency,
-            CoverageNoiseStrength = settings.CoverageNoiseStrength
+            CoverageNoiseStrength = settings.CoverageNoiseStrength,
+            PackedWidthScale = packedWidthScale
         };
     }
 
@@ -1081,9 +1346,399 @@ public partial class InfinitMeshTerrain
         }
     }
 
+    private sealed class GrassRenderCluster : IDisposable
+    {
+        private readonly int clusterSize;
+        private readonly int slotCount;
+        private readonly Bounds[] slotBounds;
+        private readonly bool[] slotActive;
+        private readonly uint[] clearAllCellCounts;
+        private readonly uint[] clearOneCellCount = new uint[1];
+        private ComputeBuffer grassClusterInstanceBuffer;
+        private ComputeBuffer grassVisibleInstanceBuffer;
+        private ComputeBuffer grassArgsBuffer;
+        private ComputeBuffer grassCellCountsBuffer;
+        private MaterialPropertyBlock grassPropertyBlock;
+        private Bounds clusterBounds;
+        private int activeSlotCount;
+        private int cellCapacity;
+        private int totalCapacity;
+        private float grassPackedWidthScale = GrassSettingsSO.DefaultMaxBladeWidth;
+        private bool clusterBoundsDirty = true;
+
+        public GrassRenderCluster(Vector2Int coord, int clusterSize)
+        {
+            Coord = coord;
+            this.clusterSize = Mathf.Max(1, clusterSize);
+            slotCount = this.clusterSize * this.clusterSize;
+            slotBounds = new Bounds[slotCount];
+            slotActive = new bool[slotCount];
+            clearAllCellCounts = new uint[slotCount];
+        }
+
+        public Vector2Int Coord { get; }
+        public bool IsEmpty => activeSlotCount <= 0;
+
+        public bool HasSlot(int slot)
+        {
+            return slot >= 0 && slot < slotActive.Length && slotActive[slot];
+        }
+
+        public void ClearSlot(int slot)
+        {
+            if (slot < 0 || slot >= slotActive.Length)
+            {
+                return;
+            }
+
+            if (slotActive[slot])
+            {
+                slotActive[slot] = false;
+                slotBounds[slot] = default;
+                activeSlotCount = Mathf.Max(0, activeSlotCount - 1);
+                clusterBoundsDirty = true;
+            }
+
+            ClearCellCount(slot);
+        }
+
+        public bool SyncCell(
+            int slot,
+            GrassCell cell,
+            int requestedCellCapacity,
+            ComputeShader shader,
+            int copyKernel)
+        {
+            if (slot < 0
+                || slot >= slotActive.Length
+                || cell == null
+                || shader == null
+                || copyKernel < 0)
+            {
+                return false;
+            }
+
+            if (!cell.CanSyncToCluster)
+            {
+                ClearSlot(slot);
+                return false;
+            }
+
+            int sourceCapacity = cell.SourceCapacity;
+            int targetCellCapacity = Mathf.Max(sourceCapacity, requestedCellCapacity);
+            if (!EnsureBuffers(targetCellCapacity, cell.PackedWidthScale)
+                || grassClusterInstanceBuffer == null
+                || grassCellCountsBuffer == null
+                || cell.SourceBuffer == null
+                || cell.SourceCounterBuffer == null)
+            {
+                return false;
+            }
+
+            shader.SetBuffer(copyKernel, GrassInstancesPropertyId, cell.SourceBuffer);
+            shader.SetBuffer(copyKernel, GrassCounterPropertyId, cell.SourceCounterBuffer);
+            shader.SetBuffer(copyKernel, GrassClusterInstancesPropertyId, grassClusterInstanceBuffer);
+            shader.SetBuffer(copyKernel, GrassClusterCellCountsPropertyId, grassCellCountsBuffer);
+            shader.SetInt(GrassCapacityPropertyId, sourceCapacity);
+            shader.SetInt(GrassClusterCellIndexPropertyId, slot);
+            shader.SetInt(GrassClusterCellCapacityPropertyId, cellCapacity);
+            shader.SetInt(GrassClusterCellCountPropertyId, slotCount);
+            shader.SetInt(GrassClusterCapacityPropertyId, totalCapacity);
+            shader.SetInt(GrassClusterWriteOffsetPropertyId, slot * cellCapacity);
+
+            int threadGroups = Mathf.CeilToInt(sourceCapacity / (float)GrassCullThreadGroupSize);
+            shader.Dispatch(copyKernel, Mathf.Max(1, threadGroups), 1, 1);
+
+            if (!slotActive[slot])
+            {
+                activeSlotCount++;
+            }
+
+            slotActive[slot] = true;
+            slotBounds[slot] = cell.GrassBounds;
+            clusterBoundsDirty = true;
+            cell.MarkClusterSynced();
+            return true;
+        }
+
+        public void DrawGrass(
+            Mesh drawMesh,
+            Material drawMaterial,
+            Vector3 viewerPosition,
+            Vector4 fadeDistances,
+            Vector4 wind,
+            Vector4 meshGrounding,
+            Vector4 trample,
+            Vector3 tramplePosition,
+            ShadowCastingMode shadowCastingMode,
+            bool receiveShadows,
+            int layer,
+            bool useBiomeGrassColor,
+            ComputeShader shader,
+            int prepareCullArgsKernel,
+            int clusterCullKernel,
+            bool useFrustumCulling,
+            Plane[] frustumPlanes,
+            Vector4[] frustumPlaneVectors)
+        {
+            if (activeSlotCount <= 0
+                || drawMesh == null
+                || drawMaterial == null
+                || shader == null
+                || prepareCullArgsKernel < 0
+                || clusterCullKernel < 0
+                || grassClusterInstanceBuffer == null
+                || grassCellCountsBuffer == null
+                || cellCapacity <= 0
+                || totalCapacity <= 0)
+            {
+                return;
+            }
+
+            Bounds drawBounds = GetClusterBounds();
+            if (useFrustumCulling
+                && frustumPlanes != null
+                && !GeometryUtility.TestPlanesAABB(frustumPlanes, drawBounds))
+            {
+                return;
+            }
+
+            if (!TryPrepareVisibleGrassBuffer(
+                drawMesh,
+                shader,
+                prepareCullArgsKernel,
+                clusterCullKernel,
+                viewerPosition,
+                fadeDistances,
+                useFrustumCulling,
+                frustumPlaneVectors))
+            {
+                return;
+            }
+
+            grassPropertyBlock ??= new MaterialPropertyBlock();
+            grassPropertyBlock.Clear();
+            grassPropertyBlock.SetBuffer(GrassInstancesPropertyId, grassVisibleInstanceBuffer);
+            grassPropertyBlock.SetVector(GrassViewerPositionPropertyId, viewerPosition);
+            grassPropertyBlock.SetVector(GrassFadeDistancesPropertyId, fadeDistances);
+            grassPropertyBlock.SetVector(GrassWindPropertyId, wind);
+            grassPropertyBlock.SetVector(GrassMeshGroundingPropertyId, meshGrounding);
+            grassPropertyBlock.SetVector(GrassTramplePropertyId, trample);
+            grassPropertyBlock.SetVector(GrassTramplePositionPropertyId, tramplePosition);
+            grassPropertyBlock.SetFloat(GrassUseBiomeGrassColorPropertyId, useBiomeGrassColor ? 1f : 0f);
+            grassPropertyBlock.SetFloat(GrassPackedWidthScalePropertyId, grassPackedWidthScale);
+
+            Graphics.DrawMeshInstancedIndirect(
+                drawMesh,
+                0,
+                drawMaterial,
+                drawBounds,
+                grassArgsBuffer,
+                0,
+                grassPropertyBlock,
+                shadowCastingMode,
+                receiveShadows,
+                layer);
+        }
+
+        public void Dispose()
+        {
+            ReleaseBuffers();
+            grassPropertyBlock = null;
+        }
+
+        private bool TryPrepareVisibleGrassBuffer(
+            Mesh drawMesh,
+            ComputeShader shader,
+            int prepareCullArgsKernel,
+            int clusterCullKernel,
+            Vector3 viewerPosition,
+            Vector4 fadeDistances,
+            bool useFrustumCulling,
+            Vector4[] frustumPlaneVectors)
+        {
+            EnsureVisibleInstanceBuffer();
+            EnsureArgsBuffer();
+            if (grassVisibleInstanceBuffer == null || grassArgsBuffer == null)
+            {
+                return false;
+            }
+
+            uint indexCount = drawMesh.GetIndexCount(0);
+            uint startIndex = drawMesh.GetIndexStart(0);
+            uint baseVertex = (uint)drawMesh.GetBaseVertex(0);
+            shader.SetBuffer(prepareCullArgsKernel, GrassArgsPropertyId, grassArgsBuffer);
+            shader.SetInt(GrassDrawIndexCountPropertyId, ClampUintToInt(indexCount));
+            shader.SetInt(GrassDrawStartIndexPropertyId, ClampUintToInt(startIndex));
+            shader.SetInt(GrassDrawBaseVertexPropertyId, ClampUintToInt(baseVertex));
+            shader.Dispatch(prepareCullArgsKernel, 1, 1, 1);
+
+            shader.SetBuffer(clusterCullKernel, GrassClusterInstancesPropertyId, grassClusterInstanceBuffer);
+            shader.SetBuffer(clusterCullKernel, GrassVisibleInstancesPropertyId, grassVisibleInstanceBuffer);
+            shader.SetBuffer(clusterCullKernel, GrassClusterCellCountsPropertyId, grassCellCountsBuffer);
+            shader.SetBuffer(clusterCullKernel, GrassArgsPropertyId, grassArgsBuffer);
+            shader.SetInt(GrassCapacityPropertyId, totalCapacity);
+            shader.SetInt(GrassClusterCellCapacityPropertyId, cellCapacity);
+            shader.SetInt(GrassClusterCellCountPropertyId, slotCount);
+            shader.SetInt(GrassClusterCapacityPropertyId, totalCapacity);
+            shader.SetVector(GrassViewerPositionPropertyId, viewerPosition);
+            shader.SetVector(GrassFadeDistancesPropertyId, fadeDistances);
+            shader.SetFloat(GrassPackedWidthScalePropertyId, grassPackedWidthScale);
+            shader.SetInt(GrassFrustumCullingEnabledPropertyId, useFrustumCulling ? 1 : 0);
+            if (useFrustumCulling && frustumPlaneVectors != null && frustumPlaneVectors.Length >= 6)
+            {
+                shader.SetVectorArray(GrassFrustumPlanesPropertyId, frustumPlaneVectors);
+            }
+
+            int threadGroups = Mathf.CeilToInt(totalCapacity / (float)GrassCullThreadGroupSize);
+            shader.Dispatch(clusterCullKernel, Mathf.Max(1, threadGroups), 1, 1);
+            return true;
+        }
+
+        private bool EnsureBuffers(int requestedCellCapacity, float packedWidthScale)
+        {
+            if (requestedCellCapacity <= 0)
+            {
+                return false;
+            }
+
+            long requestedTotalCapacity = (long)requestedCellCapacity * slotCount;
+            if (requestedTotalCapacity > int.MaxValue)
+            {
+                return false;
+            }
+
+            float targetPackedWidthScale = Mathf.Max(0.01f, packedWidthScale);
+            bool scaleChanged = Mathf.Abs(targetPackedWidthScale - grassPackedWidthScale) > 0.0001f;
+            if (!scaleChanged
+                && grassClusterInstanceBuffer != null
+                && grassCellCountsBuffer != null
+                && cellCapacity >= requestedCellCapacity
+                && totalCapacity == cellCapacity * slotCount)
+            {
+                return true;
+            }
+
+            ReleaseBuffers();
+            cellCapacity = requestedCellCapacity;
+            totalCapacity = (int)requestedTotalCapacity;
+            grassPackedWidthScale = targetPackedWidthScale;
+
+            grassClusterInstanceBuffer = new ComputeBuffer(totalCapacity, GrassInstanceStride, ComputeBufferType.Structured);
+            grassVisibleInstanceBuffer = new ComputeBuffer(totalCapacity, GrassInstanceStride, ComputeBufferType.Structured);
+            grassArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
+            grassCellCountsBuffer = new ComputeBuffer(slotCount, sizeof(uint), ComputeBufferType.Structured);
+            grassCellCountsBuffer.SetData(clearAllCellCounts);
+            ResetSlots();
+            return true;
+        }
+
+        private void EnsureVisibleInstanceBuffer()
+        {
+            if (grassVisibleInstanceBuffer != null && grassVisibleInstanceBuffer.count >= totalCapacity)
+            {
+                return;
+            }
+
+            ReleaseBuffer(ref grassVisibleInstanceBuffer);
+            if (totalCapacity > 0)
+            {
+                grassVisibleInstanceBuffer = new ComputeBuffer(totalCapacity, GrassInstanceStride, ComputeBufferType.Structured);
+            }
+        }
+
+        private void EnsureArgsBuffer()
+        {
+            if (grassArgsBuffer == null)
+            {
+                grassArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
+            }
+        }
+
+        private void ClearCellCount(int slot)
+        {
+            if (grassCellCountsBuffer != null && slot < grassCellCountsBuffer.count)
+            {
+                grassCellCountsBuffer.SetData(clearOneCellCount, 0, slot, 1);
+            }
+        }
+
+        private Bounds GetClusterBounds()
+        {
+            if (!clusterBoundsDirty)
+            {
+                return clusterBounds;
+            }
+
+            bool hasBounds = false;
+            for (int i = 0; i < slotBounds.Length; i++)
+            {
+                if (!slotActive[i])
+                {
+                    continue;
+                }
+
+                if (!hasBounds)
+                {
+                    clusterBounds = slotBounds[i];
+                    hasBounds = true;
+                }
+                else
+                {
+                    clusterBounds.Encapsulate(slotBounds[i]);
+                }
+            }
+
+            if (!hasBounds)
+            {
+                clusterBounds = new Bounds(Vector3.zero, Vector3.zero);
+            }
+
+            clusterBoundsDirty = false;
+            return clusterBounds;
+        }
+
+        private void ReleaseBuffers()
+        {
+            ReleaseBuffer(ref grassClusterInstanceBuffer);
+            ReleaseBuffer(ref grassVisibleInstanceBuffer);
+            ReleaseBuffer(ref grassArgsBuffer);
+            ReleaseBuffer(ref grassCellCountsBuffer);
+            cellCapacity = 0;
+            totalCapacity = 0;
+            ResetSlots();
+        }
+
+        private void ResetSlots()
+        {
+            Array.Clear(slotActive, 0, slotActive.Length);
+            Array.Clear(slotBounds, 0, slotBounds.Length);
+            activeSlotCount = 0;
+            clusterBounds = new Bounds(Vector3.zero, Vector3.zero);
+            clusterBoundsDirty = true;
+        }
+
+        private static void ReleaseBuffer(ref ComputeBuffer buffer)
+        {
+            if (buffer == null)
+            {
+                return;
+            }
+
+            buffer.Release();
+            buffer = null;
+        }
+
+        private static int ClampUintToInt(uint value)
+        {
+            return value > int.MaxValue ? int.MaxValue : (int)value;
+        }
+    }
+
     private sealed class GrassCell : IDisposable
     {
         private ComputeBuffer grassInstanceBuffer;
+        private ComputeBuffer grassVisibleInstanceBuffer;
         private ComputeBuffer grassArgsBuffer;
         private ComputeBuffer grassCounterBuffer;
         private MaterialPropertyBlock grassPropertyBlock;
@@ -1096,8 +1751,12 @@ public partial class InfinitMeshTerrain
         private uint grassArgsStartIndex;
         private uint grassArgsBaseVertex;
         private bool grassArgsDirty = true;
+        private bool grassArgsUseVisibleInstances;
         private bool grassBuilt;
         private bool grassGeneratedOnGpu;
+        private bool grassNeedsClusterSync;
+        private float grassPackedWidthScale = GrassSettingsSO.DefaultMaxBladeWidth;
+        private readonly uint[] grassCounterUploadData = new uint[1];
         private NativeArray<GrassInstanceData> pendingGrassUpload;
 
         public GrassCell(Vector2Int coord)
@@ -1111,12 +1770,23 @@ public partial class InfinitMeshTerrain
         public bool HasGrass => grassBuilt
             && grassInstanceBuffer != null
             && (grassGeneratedOnGpu || grassInstanceCount > 0);
+        public bool NeedsClusterSync => grassNeedsClusterSync;
+        public ComputeBuffer SourceBuffer => grassInstanceBuffer;
+        public ComputeBuffer SourceCounterBuffer => grassCounterBuffer;
+        public int SourceCapacity => grassGeneratedOnGpu ? grassGpuCapacity : grassInstanceCount;
+        public Bounds GrassBounds => grassBounds;
+        public float PackedWidthScale => grassPackedWidthScale;
+        public bool CanSyncToCluster => HasGrass
+            && grassCounterBuffer != null
+            && SourceCapacity > 0;
 
         public void Apply(GrassBuildTask task)
         {
             DisposePendingGrassUpload();
             grassGeneratedOnGpu = false;
             grassGpuCapacity = 0;
+            grassNeedsClusterSync = false;
+            grassPackedWidthScale = Mathf.Max(0.01f, task.GrassPackedWidthScale);
 
             if (!task.HasGrassInstances)
             {
@@ -1128,6 +1798,7 @@ public partial class InfinitMeshTerrain
             grassBuilt = true;
             grassInstanceCount = 0;
             grassArgsDirty = true;
+            grassArgsUseVisibleInstances = false;
 
             if (instanceCount == 0)
             {
@@ -1164,6 +1835,9 @@ public partial class InfinitMeshTerrain
             grassInstanceCount = 0;
             grassGpuCapacity = Mathf.Max(0, task.GrassInstanceCapacity);
             grassArgsDirty = true;
+            grassArgsUseVisibleInstances = false;
+            grassNeedsClusterSync = false;
+            grassPackedWidthScale = Mathf.Max(0.01f, settings.PackedWidthScale);
 
             if (shader == null
                 || generateKernel < 0
@@ -1236,7 +1910,13 @@ public partial class InfinitMeshTerrain
                 int threadGroups = Mathf.CeilToInt(cellsPerAxis / 8f);
                 shader.Dispatch(generateKernel, threadGroups, threadGroups, 1);
                 UpdateGpuGrassArgs(shader, finalizeArgsKernel, drawMesh);
-                return !grassArgsDirty;
+                if (grassArgsDirty)
+                {
+                    return false;
+                }
+
+                grassNeedsClusterSync = true;
+                return true;
             }
             finally
             {
@@ -1295,14 +1975,43 @@ public partial class InfinitMeshTerrain
             int layer,
             bool useBiomeGrassColor,
             ComputeShader grassArgsComputeShader,
-            int finalizeArgsKernel)
+            int finalizeArgsKernel,
+            int prepareCullArgsKernel,
+            int cullKernel,
+            bool useFrustumCulling,
+            Plane[] frustumPlanes,
+            Vector4[] frustumPlaneVectors)
         {
             if (!HasGrass || drawMesh == null || drawMaterial == null)
             {
                 return;
             }
 
-            EnsureGrassArgsBuffer(drawMesh, grassArgsComputeShader, finalizeArgsKernel);
+            if (useFrustumCulling
+                && frustumPlanes != null
+                && !GeometryUtility.TestPlanesAABB(frustumPlanes, grassBounds))
+            {
+                return;
+            }
+
+            ComputeBuffer drawInstanceBuffer = grassInstanceBuffer;
+            if (TryPrepareVisibleGrassBuffer(
+                drawMesh,
+                grassArgsComputeShader,
+                prepareCullArgsKernel,
+                cullKernel,
+                viewerPosition,
+                fadeDistances,
+                useFrustumCulling,
+                frustumPlaneVectors))
+            {
+                drawInstanceBuffer = grassVisibleInstanceBuffer;
+            }
+            else
+            {
+                EnsureGrassArgsBuffer(drawMesh, grassArgsComputeShader, finalizeArgsKernel);
+            }
+
             if (grassArgsBuffer == null || grassArgsDirty)
             {
                 return;
@@ -1310,7 +2019,7 @@ public partial class InfinitMeshTerrain
 
             grassPropertyBlock ??= new MaterialPropertyBlock();
             grassPropertyBlock.Clear();
-            grassPropertyBlock.SetBuffer(GrassInstancesPropertyId, grassInstanceBuffer);
+            grassPropertyBlock.SetBuffer(GrassInstancesPropertyId, drawInstanceBuffer);
             grassPropertyBlock.SetVector(GrassViewerPositionPropertyId, viewerPosition);
             grassPropertyBlock.SetVector(GrassFadeDistancesPropertyId, fadeDistances);
             grassPropertyBlock.SetVector(GrassWindPropertyId, wind);
@@ -1318,6 +2027,7 @@ public partial class InfinitMeshTerrain
             grassPropertyBlock.SetVector(GrassTramplePropertyId, trample);
             grassPropertyBlock.SetVector(GrassTramplePositionPropertyId, tramplePosition);
             grassPropertyBlock.SetFloat(GrassUseBiomeGrassColorPropertyId, useBiomeGrassColor ? 1f : 0f);
+            grassPropertyBlock.SetFloat(GrassPackedWidthScalePropertyId, grassPackedWidthScale);
 
             Graphics.DrawMeshInstancedIndirect(
                 drawMesh,
@@ -1330,6 +2040,69 @@ public partial class InfinitMeshTerrain
                 shadowCastingMode,
                 receiveShadows,
                 layer);
+        }
+
+        private bool TryPrepareVisibleGrassBuffer(
+            Mesh drawMesh,
+            ComputeShader shader,
+            int prepareCullArgsKernel,
+            int cullKernel,
+            Vector3 viewerPosition,
+            Vector4 fadeDistances,
+            bool useFrustumCulling,
+            Vector4[] frustumPlaneVectors)
+        {
+            int sourceCapacity = grassGeneratedOnGpu ? grassGpuCapacity : grassInstanceCount;
+            if (shader == null
+                || prepareCullArgsKernel < 0
+                || cullKernel < 0
+                || drawMesh == null
+                || grassInstanceBuffer == null
+                || sourceCapacity <= 0)
+            {
+                return false;
+            }
+
+            EnsureGrassCounterBuffer();
+            EnsureGrassVisibleInstanceBuffer(sourceCapacity);
+            EnsureGrassArgsBufferStorage();
+            if (grassCounterBuffer == null || grassVisibleInstanceBuffer == null || grassArgsBuffer == null)
+            {
+                return false;
+            }
+
+            uint indexCount = drawMesh.GetIndexCount(0);
+            uint startIndex = drawMesh.GetIndexStart(0);
+            uint baseVertex = (uint)drawMesh.GetBaseVertex(0);
+            shader.SetBuffer(prepareCullArgsKernel, GrassArgsPropertyId, grassArgsBuffer);
+            shader.SetInt(GrassDrawIndexCountPropertyId, ClampUintToInt(indexCount));
+            shader.SetInt(GrassDrawStartIndexPropertyId, ClampUintToInt(startIndex));
+            shader.SetInt(GrassDrawBaseVertexPropertyId, ClampUintToInt(baseVertex));
+            shader.Dispatch(prepareCullArgsKernel, 1, 1, 1);
+
+            shader.SetBuffer(cullKernel, GrassInstancesPropertyId, grassInstanceBuffer);
+            shader.SetBuffer(cullKernel, GrassVisibleInstancesPropertyId, grassVisibleInstanceBuffer);
+            shader.SetBuffer(cullKernel, GrassCounterPropertyId, grassCounterBuffer);
+            shader.SetBuffer(cullKernel, GrassArgsPropertyId, grassArgsBuffer);
+            shader.SetInt(GrassCapacityPropertyId, sourceCapacity);
+            shader.SetVector(GrassViewerPositionPropertyId, viewerPosition);
+            shader.SetVector(GrassFadeDistancesPropertyId, fadeDistances);
+            shader.SetFloat(GrassPackedWidthScalePropertyId, grassPackedWidthScale);
+            shader.SetInt(GrassFrustumCullingEnabledPropertyId, useFrustumCulling ? 1 : 0);
+            if (useFrustumCulling && frustumPlaneVectors != null && frustumPlaneVectors.Length >= 6)
+            {
+                shader.SetVectorArray(GrassFrustumPlanesPropertyId, frustumPlaneVectors);
+            }
+
+            int threadGroups = Mathf.CeilToInt(sourceCapacity / (float)GrassCullThreadGroupSize);
+            shader.Dispatch(cullKernel, Mathf.Max(1, threadGroups), 1, 1);
+
+            grassArgsIndexCount = indexCount;
+            grassArgsStartIndex = startIndex;
+            grassArgsBaseVertex = baseVertex;
+            grassArgsDirty = false;
+            grassArgsUseVisibleInstances = true;
+            return true;
         }
 
         public void ClearGrass()
@@ -1350,8 +2123,11 @@ public partial class InfinitMeshTerrain
             grassInstanceCount = 0;
             grassGpuCapacity = 0;
             grassArgsDirty = true;
+            grassArgsUseVisibleInstances = false;
+            grassNeedsClusterSync = false;
             DisposePendingGrassUpload();
             ReleaseGrassInstanceBuffer();
+            ReleaseGrassVisibleInstanceBuffer();
             ReleaseGrassArgsBuffer();
             ReleaseGrassCounterBuffer();
         }
@@ -1361,7 +2137,21 @@ public partial class InfinitMeshTerrain
             grassGeneratedOnGpu = false;
             grassInstanceCount = pendingGrassUploadCount;
             grassArgsDirty = true;
+            grassArgsUseVisibleInstances = false;
+            grassNeedsClusterSync = grassInstanceCount > 0;
+            EnsureGrassCounterBuffer();
+            if (grassCounterBuffer != null)
+            {
+                grassCounterUploadData[0] = (uint)Mathf.Max(0, grassInstanceCount);
+                grassCounterBuffer.SetData(grassCounterUploadData);
+            }
+
             DisposePendingGrassUpload();
+        }
+
+        public void MarkClusterSynced()
+        {
+            grassNeedsClusterSync = false;
         }
 
         private void DisposePendingGrassUpload()
@@ -1383,14 +2173,36 @@ public partial class InfinitMeshTerrain
                 grassInstanceBuffer = new ComputeBuffer(instanceCapacity, GrassInstanceStride, ComputeBufferType.Structured);
             }
 
+            EnsureGrassCounterBuffer();
+            EnsureGrassArgsBufferStorage();
+        }
+
+        private void EnsureGrassVisibleInstanceBuffer(int instanceCapacity)
+        {
+            if (grassVisibleInstanceBuffer != null && grassVisibleInstanceBuffer.count >= instanceCapacity)
+            {
+                return;
+            }
+
+            ReleaseGrassVisibleInstanceBuffer();
+            grassVisibleInstanceBuffer = new ComputeBuffer(instanceCapacity, GrassInstanceStride, ComputeBufferType.Structured);
+        }
+
+        private void EnsureGrassCounterBuffer()
+        {
             if (grassCounterBuffer == null)
             {
                 grassCounterBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
             }
+        }
 
+        private void EnsureGrassArgsBufferStorage()
+        {
             if (grassArgsBuffer == null)
             {
                 grassArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
+                grassArgsDirty = true;
+                grassArgsUseVisibleInstances = false;
             }
         }
 
@@ -1446,13 +2258,15 @@ public partial class InfinitMeshTerrain
             shader.SetFloat(GrassMinSlopeAnglePropertyId, settings.MinSlopeAngle);
             shader.SetFloat(GrassMaxSlopeAnglePropertyId, settings.MaxSlopeAngle);
             shader.SetFloat(GrassSlopeFadeRangePropertyId, settings.SlopeFadeRange);
-            shader.SetFloat(GrassBladeHeightPropertyId, settings.BladeHeight);
-            shader.SetFloat(GrassBladeHeightVariationPropertyId, settings.BladeHeightVariation);
-            shader.SetFloat(GrassBladeWidthPropertyId, settings.BladeWidth);
-            shader.SetFloat(GrassBladeWidthVariationPropertyId, settings.BladeWidthVariation);
+            shader.SetVector(GrassBladeSizeRangePropertyId, new Vector4(
+                settings.MinBladeWidth,
+                settings.MinBladeHeight,
+                settings.MaxBladeWidth,
+                settings.MaxBladeHeight));
             shader.SetFloat(GrassColorVariationPropertyId, settings.ColorVariation);
             shader.SetFloat(GrassNormalAlignmentPropertyId, settings.NormalAlignment);
             shader.SetFloat(GrassSurfaceOffsetPropertyId, settings.SurfaceOffset);
+            shader.SetFloat(GrassPackedWidthScalePropertyId, settings.PackedWidthScale);
             shader.SetFloat(GrassCoverageNoiseFrequencyPropertyId, settings.CoverageNoiseFrequency);
             shader.SetFloat(GrassCoverageNoiseStrengthPropertyId, settings.CoverageNoiseStrength);
             shader.SetInt(GrassChunkCoordXPropertyId, task.Coord.x);
@@ -1475,11 +2289,13 @@ public partial class InfinitMeshTerrain
             uint startIndex = drawMesh.GetIndexStart(0);
             uint baseVertex = (uint)drawMesh.GetBaseVertex(0);
 
-            if (grassArgsBuffer == null)
+            if (grassArgsUseVisibleInstances)
             {
-                grassArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
                 grassArgsDirty = true;
+                grassArgsUseVisibleInstances = false;
             }
+
+            EnsureGrassArgsBufferStorage();
 
             if (grassGeneratedOnGpu)
             {
@@ -1517,6 +2333,7 @@ public partial class InfinitMeshTerrain
             grassArgsStartIndex = startIndex;
             grassArgsBaseVertex = baseVertex;
             grassArgsDirty = false;
+            grassArgsUseVisibleInstances = false;
         }
 
         private void UpdateGpuGrassArgs(ComputeShader shader, int kernel, Mesh drawMesh)
@@ -1549,6 +2366,7 @@ public partial class InfinitMeshTerrain
             grassArgsStartIndex = startIndex;
             grassArgsBaseVertex = baseVertex;
             grassArgsDirty = false;
+            grassArgsUseVisibleInstances = false;
         }
 
         private void ReleaseGrassInstanceBuffer()
@@ -1560,6 +2378,17 @@ public partial class InfinitMeshTerrain
 
             grassInstanceBuffer.Release();
             grassInstanceBuffer = null;
+        }
+
+        private void ReleaseGrassVisibleInstanceBuffer()
+        {
+            if (grassVisibleInstanceBuffer == null)
+            {
+                return;
+            }
+
+            grassVisibleInstanceBuffer.Release();
+            grassVisibleInstanceBuffer = null;
         }
 
         private void ReleaseGrassArgsBuffer()
@@ -1589,6 +2418,11 @@ public partial class InfinitMeshTerrain
             return Mathf.Max(1, Mathf.CeilToInt(cellSize / Mathf.Max(0.1f, settings.CellSize)));
         }
 
+        private static int ClampUintToInt(uint value)
+        {
+            return value > int.MaxValue ? int.MaxValue : (int)value;
+        }
+
         private static Bounds CalculateGpuGrassBounds(GrassBuildTask task, GrassBuildSettings settings)
         {
             float minY = float.MaxValue;
@@ -1610,12 +2444,8 @@ public partial class InfinitMeshTerrain
                 maxY = settings.MaxHeight;
             }
 
-            float maxBladeHeight = settings.BladeHeight
-                * Mathf.Max(1f, settings.MaxBiomeBladeHeightMultiplier)
-                * Mathf.Max(0.05f, 1f + settings.BladeHeightVariation);
-            float maxBladeWidth = settings.BladeWidth
-                * Mathf.Max(1f, settings.MaxBiomeBladeWidthMultiplier)
-                * Mathf.Max(0.05f, 1f + settings.BladeWidthVariation);
+            float maxBladeHeight = settings.MaxBladeHeight * Mathf.Max(1f, settings.MaxBiomeBladeHeightMultiplier);
+            float maxBladeWidth = settings.MaxBladeWidth * Mathf.Max(1f, settings.MaxBiomeBladeWidthMultiplier);
             float horizontalPadding = Mathf.Max(maxBladeWidth, settings.SurfaceOffset) * 3f + 2f;
             float minBoundsY = minY + settings.SurfaceOffset;
             float maxBoundsY = maxY + settings.SurfaceOffset + maxBladeHeight;
@@ -1742,12 +2572,14 @@ public partial class InfinitMeshTerrain
                             continue;
                         }
 
-                        float bladeHeight = Settings.BladeHeight * biomeGrass.BladeHeightMultiplier * math.max(
-                            0.05f,
-                            1f + (Hash01(instanceHash + 0xa54ff53au) * 2f - 1f) * Settings.BladeHeightVariation);
-                        float bladeWidth = Settings.BladeWidth * biomeGrass.BladeWidthMultiplier * math.max(
-                            0.05f,
-                            1f + (Hash01(instanceHash + 0x510e527fu) * 2f - 1f) * Settings.BladeWidthVariation);
+                        float bladeHeight = math.lerp(
+                            Settings.MinBladeHeight,
+                            Settings.MaxBladeHeight,
+                            Hash01(instanceHash + 0xa54ff53au)) * biomeGrass.BladeHeightMultiplier;
+                        float bladeWidth = math.lerp(
+                            Settings.MinBladeWidth,
+                            Settings.MaxBladeWidth,
+                            Hash01(instanceHash + 0x510e527fu)) * biomeGrass.BladeWidthMultiplier;
                         float yaw = Hash01(instanceHash + 0x1f83d9abu) * 6.2831855f;
                         float colorScale = 1f
                             + (Hash01(instanceHash + 0x5be0cd19u) * 2f - 1f) * biomeGrass.ColorVariation;
@@ -1756,13 +2588,15 @@ public partial class InfinitMeshTerrain
                         float3 instanceNormal = math.normalize(math.lerp(new float3(0f, 1f, 0f), normalWS, Settings.NormalAlignment));
                         positionWS.y += Settings.SurfaceOffset;
 
-                        GrassInstances[count] = new GrassInstanceData
-                        {
-                            PositionScale = new float4(positionWS, bladeHeight),
-                            NormalYaw = new float4(instanceNormal, yaw),
-                            ColorWidth = new float4(instanceBaseColor, bladeWidth),
-                            TipColor = new float4(instanceTipColor, 1f)
-                        };
+                        GrassInstances[count] = GrassInstanceData.Create(
+                            positionWS,
+                            bladeHeight,
+                            instanceNormal,
+                            yaw,
+                            instanceBaseColor,
+                            instanceTipColor,
+                            bladeWidth,
+                            Settings.PackedWidthScale);
 
                         float radius = math.max(bladeWidth, Settings.SurfaceOffset) * 1.5f;
                         bounds.Min = math.min(bounds.Min, positionWS + new float3(-radius, 0f, -radius));
@@ -1793,24 +2627,42 @@ public partial class InfinitMeshTerrain
             int i01 = z1 * Resolution + x0;
             int i11 = z1 * Resolution + x1;
 
-            float h00 = Vertices[i00].y;
-            float h10 = Vertices[i10].y;
-            float h01 = Vertices[i01].y;
-            float h11 = Vertices[i11].y;
-            float height0 = math.lerp(h00, h10, tx);
-            float height1 = math.lerp(h01, h11, tx);
-            float surfaceHeight = math.lerp(height0, height1, tz);
-
             float3 n00 = ToFloat3(Normals[i00]);
             float3 n10 = ToFloat3(Normals[i10]);
             float3 n01 = ToFloat3(Normals[i01]);
             float3 n11 = ToFloat3(Normals[i11]);
-            float3 normal0 = math.lerp(n00, n10, tx);
-            float3 normal1 = math.lerp(n01, n11, tx);
-            normalWS = math.normalize(math.lerp(normal0, normal1, tz));
-            if (math.lengthsq(normalWS) < 0.0001f)
+
+            float h00 = Vertices[i00].y;
+            float h10 = Vertices[i10].y;
+            float h01 = Vertices[i01].y;
+            float h11 = Vertices[i11].y;
+            float surfaceHeight;
+            float3 normalBlend;
+
+            if (tz >= tx)
+            {
+                float w00 = 1f - tz;
+                float w01 = tz - tx;
+                float w11 = tx;
+                surfaceHeight = h00 * w00 + h01 * w01 + h11 * w11;
+                normalBlend = n00 * w00 + n01 * w01 + n11 * w11;
+            }
+            else
+            {
+                float w00 = 1f - tx;
+                float w10 = tx - tz;
+                float w11 = tz;
+                surfaceHeight = h00 * w00 + h10 * w10 + h11 * w11;
+                normalBlend = n00 * w00 + n10 * w10 + n11 * w11;
+            }
+
+            if (math.lengthsq(normalBlend) < 0.0001f)
             {
                 normalWS = new float3(0f, 1f, 0f);
+            }
+            else
+            {
+                normalWS = math.normalize(normalBlend);
             }
 
             positionWS = new float3(ChunkOrigin.x + local.x, surfaceHeight, ChunkOrigin.y + local.y);
@@ -2032,6 +2884,7 @@ public partial class InfinitMeshTerrain
         private uint grassArgsBaseVertex;
         private bool grassArgsDirty = true;
         private bool grassBuilt;
+        private float grassPackedWidthScale = GrassSettingsSO.DefaultMaxBladeWidth;
         private NativeArray<GrassInstanceData> pendingGrassUpload;
 
         public bool HasPendingGrassUpload => pendingGrassUpload.IsCreated;
@@ -2052,6 +2905,7 @@ public partial class InfinitMeshTerrain
             grassBuilt = true;
             grassInstanceCount = 0;
             grassArgsDirty = true;
+            grassPackedWidthScale = Mathf.Max(0.01f, task.GrassPackedWidthScale);
 
             if (instanceCount == 0)
             {
@@ -2160,6 +3014,7 @@ public partial class InfinitMeshTerrain
             grassPropertyBlock.SetVector(GrassMeshGroundingPropertyId, meshGrounding);
             grassPropertyBlock.SetVector(GrassTramplePropertyId, trample);
             grassPropertyBlock.SetVector(GrassTramplePositionPropertyId, tramplePosition);
+            grassPropertyBlock.SetFloat(GrassPackedWidthScalePropertyId, grassPackedWidthScale);
 
             Graphics.DrawMeshInstancedIndirect(
                 drawMesh,

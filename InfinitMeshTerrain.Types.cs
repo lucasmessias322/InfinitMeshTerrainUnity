@@ -143,10 +143,60 @@ public partial class InfinitMeshTerrain
 
     private struct GrassInstanceData
     {
+        private const float TwoPi = 6.2831855f;
+
         public float4 PositionScale;
-        public float4 NormalYaw;
-        public float4 ColorWidth;
-        public float4 TipColor;
+        public uint4 Packed;
+
+        public static GrassInstanceData Create(
+            float3 position,
+            float height,
+            float3 normal,
+            float yaw,
+            float3 baseColor,
+            float3 tipColor,
+            float width,
+            float packedWidthScale)
+        {
+            return new GrassInstanceData
+            {
+                PositionScale = new float4(position, height),
+                Packed = new uint4(
+                    PackNormalYaw(normal, yaw),
+                    PackColorWidth(baseColor, width, packedWidthScale),
+                    PackColor(tipColor),
+                    0u)
+            };
+        }
+
+        private static uint PackNormalYaw(float3 normal, float yaw)
+        {
+            float3 normalized = math.normalizesafe(normal, new float3(0f, 1f, 0f));
+            uint normalX = PackUnorm8(normalized.x * 0.5f + 0.5f);
+            uint normalZ = PackUnorm8(normalized.z * 0.5f + 0.5f);
+            float yaw01 = yaw / TwoPi;
+            yaw01 -= math.floor(yaw01);
+            uint packedYaw = (uint)math.round(math.saturate(yaw01) * 65535f);
+            return normalX | (normalZ << 8) | (packedYaw << 16);
+        }
+
+        private static uint PackColorWidth(float3 color, float width, float packedWidthScale)
+        {
+            float widthScale = math.max(0.0001f, packedWidthScale);
+            return PackColor(color) | (PackUnorm8(width / widthScale) << 24);
+        }
+
+        private static uint PackColor(float3 color)
+        {
+            return PackUnorm8(color.x)
+                | (PackUnorm8(color.y) << 8)
+                | (PackUnorm8(color.z) << 16);
+        }
+
+        private static uint PackUnorm8(float value)
+        {
+            return (uint)math.round(math.saturate(value) * 255f);
+        }
     }
 
     private struct GrassTerrainLayerData
@@ -241,10 +291,10 @@ public partial class InfinitMeshTerrain
         public float MinSlopeAngle;
         public float MaxSlopeAngle;
         public float SlopeFadeRange;
-        public float BladeHeight;
-        public float BladeHeightVariation;
-        public float BladeWidth;
-        public float BladeWidthVariation;
+        public float MinBladeHeight;
+        public float MaxBladeHeight;
+        public float MinBladeWidth;
+        public float MaxBladeWidth;
         public float ColorVariation;
         public float MaxBiomeDensityMultiplier;
         public float MaxBiomeBladeHeightMultiplier;
@@ -253,6 +303,7 @@ public partial class InfinitMeshTerrain
         public float SurfaceOffset;
         public float CoverageNoiseFrequency;
         public float CoverageNoiseStrength;
+        public float PackedWidthScale;
     }
 
     private struct GrassChunkBounds

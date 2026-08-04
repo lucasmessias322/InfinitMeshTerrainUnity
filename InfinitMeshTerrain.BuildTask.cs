@@ -94,6 +94,8 @@ public partial class InfinitMeshTerrain
                 GrassBounds = new NativeArray<GrassChunkBounds>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
                 GrassTerrainLayers = new NativeArray<GrassTerrainLayerData>(Mathf.Max(0, grassTerrainLayerCount), Allocator.Persistent);
             }
+
+            GrassPackedWidthScale = GrassSettingsSO.DefaultMaxBladeWidth;
         }
 
         public Vector2Int Coord { get; }
@@ -128,6 +130,7 @@ public partial class InfinitMeshTerrain
         public NativeArray<int> GrassInstanceCounter;
         public NativeArray<GrassChunkBounds> GrassBounds;
         public NativeArray<GrassTerrainLayerData> GrassTerrainLayers;
+        public float GrassPackedWidthScale;
         public bool HasGrassInstances => GrassInstances.IsCreated
             && GrassInstanceCounter.IsCreated
             && GrassBounds.IsCreated
@@ -337,7 +340,8 @@ public partial class InfinitMeshTerrain
             int grassInstanceCapacity,
             int grassTerrainLayerCount,
             int grassBiomeCount,
-            bool useGpuGeneration)
+            bool useGpuGeneration,
+            float grassPackedWidthScale)
         {
             Coord = coord;
             CellSize = cellSize;
@@ -345,6 +349,7 @@ public partial class InfinitMeshTerrain
             SurfaceVertexCount = surfaceVertexCount;
             GrassInstanceCapacity = Mathf.Max(0, grassInstanceCapacity);
             UseGpuGeneration = useGpuGeneration;
+            GrassPackedWidthScale = Mathf.Max(0.01f, grassPackedWidthScale);
             Heights = new NativeArray<float>(GetHeightMapVertexCount(SurfaceResolution), Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Vertices = new NativeArray<Vector3>(surfaceVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             Normals = new NativeArray<Vector3>(surfaceVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -384,6 +389,7 @@ public partial class InfinitMeshTerrain
         public int SurfaceVertexCount { get; }
         public int GrassInstanceCapacity { get; }
         public bool UseGpuGeneration { get; }
+        public float GrassPackedWidthScale { get; }
         public JobHandle Handle;
         public NativeArray<float> Heights;
         public NativeArray<Vector3> Vertices;
